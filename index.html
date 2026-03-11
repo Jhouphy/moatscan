@@ -1,0 +1,972 @@
+name: 📊 Daily Stock Screener
+
+on:
+  schedule:
+    # 台股收盤後 (UTC 07:00 = 台灣 15:00)
+    - cron: "0 7 * * 1-5"
+    # 美股收盤後 (UTC 22:00 = 美東 17:00)  
+    - cron: "0 22 * * 1-5"
+  workflow_dispatch:   # 可手動觸發
+
+jobs:
+  screen-tw:
+    name: 🇹🇼 台股篩選
+    runs-on: ubuntu-latest
+    # 只在台灣時段（UTC 07:xx）執行
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 7'))
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install yfinance pandas requests
+
+      - name: Run Taiwan screener
+        run: python scripts/screener_tw.py
+
+      - name: Commit & push results
+        run: |
+          git config user.name  "MoatScan Bot"
+          git config user.email "bot@moatscan.local"
+          git add data/tw_results.json
+          git diff --staged --quiet || git commit -m "📊 台股篩選更新 $(date +'%Y-%m-%d')"
+          git push
+
+  screen-us:
+    name: 🇺🇸 美股篩選
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 22'))
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install yfinance pandas requests lxml html5lib beautifulsoup4
+
+      - name: Run US screener
+        run: python scripts/screener_us.py
+
+      - name: Commit & push results
+        run: |
+          git config user.name  "MoatScan Bot"
+          git config user.email "bot@moatscan.local"
+          git add data/us_results.json
+          git diff --staged --quiet || git commit -m "📊 美股篩選更新 $(date +'%Y-%m-%d')"
+          git push
+
+"""
+MoatScan - 美股全市場篩選腳本
+輸出：data/us_results.json
+"""
+
+import yfinance as yf
+import pandas as pd
+import json
+import requests
+import time
+from datetime import datetime
+import os
+
+# ── 取得美股代號清單（S&P500 + NASDAQ100 + 其他） ────────────────────────
+def get_us_tickers():
+    tickers = set()
+
+    # S&P 500 (Wikipedia)
+    try:
+        sp500 = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
+        for t in sp500["Symbol"].tolist():
+            tickers.add(str(t).replace(".", "-"))
+        print(f"[INFO] S&P500: {len(tickers)} 支")
+    except Exception as e:
+        print(f"[警告] S&P500 清單失敗: {e}")
+
+    # NASDAQ 100
+    try:
+        nq100 = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100")[4]
+        col = [c for c in nq100.columns if "ticker" in c.lower() or "symbol" in c.lower()]
+        if col:
+            for t in nq100[col[0]].tolist():
+                tickers.add(str(t))
+        print(f"[INFO] 加入 NASDAQ100 後: {len(tickers)} 支")
+    except Exception as e:
+        print(f"[警告] NASDAQ100 清單失敗: {e}")
+
+    # 若有本地清單（進階版可加入全 8000 支）
+    if os.path.exists("data/us_tickers_full.txt"):
+        with open("data/us_tickers_full.txt") as f:
+            for line in f:
+                t = line.strip()
+                if t:
+                    tickers.add(t)
+
+    result = sorted(list(tickers))
+    print(f"[INFO] 共取得 {len(result)} 支美股代號")
+    return result
+
+
+# ── 單支股票評分（與台股相同邏輯）─────────────────────────────────────────
+def score_ticker(ticker_str, retries=2):
+    for attempt in range(retries):
+        try:
+            tk = yf.Ticker(ticker_str)
+            info = tk.info
+
+            name     = info.get("longName") or info.get("shortName") or ticker_str
+            sector   = info.get("sector", "未知")
+            industry = info.get("industry", "未知")
+            mkt_cap  = info.get("marketCap", 0)
+            price    = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+            summary  = (info.get("longBusinessSummary") or "")[:400]
+
+            # 市值 < 5億美元跳過
+            if mkt_cap and mkt_cap < 500_000_000:
+                return None
+
+            scores  = {}
+            details = {}
+
+            fin = tk.financials
+            cf  = tk.cashflow
+            bs  = tk.balance_sheet
+
+            def col_values(df, *keys):
+                for key in keys:
+                    if df is not None and not df.empty:
+                        for idx in df.index:
+                            if key.lower() in str(idx).lower():
+                                return df.loc[idx].dropna().tolist()
+                return []
+
+            # 1. EPS
+            eps_vals = col_values(fin, "Basic EPS", "Diluted EPS")
+            if not eps_vals:
+                te = info.get("trailingEps")
+                eps_vals = [te] if te else []
+            eps_pass = False
+            if len(eps_vals) >= 2:
+                pos = sum(1 for v in eps_vals if v and v > 0)
+                trend = eps_vals[0] >= eps_vals[-1] * 0.8 if eps_vals[-1] and eps_vals[-1] > 0 else False
+                eps_pass = (pos >= len(eps_vals) * 0.75) and trend
+            scores["eps"]   = 1 if eps_pass else 0
+            details["eps"]  = f"最新EPS ${round(eps_vals[0],2) if eps_vals else 'N/A'}"
+
+            # 2. FCF
+            op_cf  = col_values(cf, "Operating Cash Flow", "Cash From Operations")
+            cap_ex = col_values(cf, "Capital Expenditure", "Purchase Of PPE")
+            fcf_vals = [op_cf[i] - abs(cap_ex[i] if cap_ex[i] else 0) for i in range(min(len(op_cf), len(cap_ex)))]
+            fcf_pass = len(fcf_vals) >= 2 and sum(1 for v in fcf_vals if v > 0) >= len(fcf_vals) * 0.8
+            scores["fcf"]   = 1 if fcf_pass else 0
+            details["fcf"]  = f"{sum(1 for v in fcf_vals if v>0)}/{len(fcf_vals)}年FCF為正"
+
+            # 3. ROIC
+            ebit_vals  = col_values(fin, "EBIT", "Operating Income")
+            tax_rate   = info.get("effectiveTaxRate", 0.21)
+            total_eq   = col_values(bs, "Stockholders Equity", "Total Equity")
+            total_debt = col_values(bs, "Total Debt", "Long Term Debt")
+            roic_vals  = []
+            for i in range(min(len(ebit_vals), len(total_eq), len(total_debt))):
+                nopat    = ebit_vals[i] * (1 - tax_rate)
+                invested = (total_eq[i] or 0) + (total_debt[i] or 0)
+                if invested > 0:
+                    roic_vals.append(nopat / invested)
+            roic_pass = bool(roic_vals) and sum(1 for r in roic_vals if r > 0.10) >= len(roic_vals) * 0.7
+            scores["roic"]   = 1 if roic_pass else 0
+            details["roic"]  = f"最新ROIC {round(roic_vals[0]*100,1) if roic_vals else 'N/A'}%"
+
+            # 4. D/E
+            de = info.get("debtToEquity")
+            de_ratio = de / 100 if de is not None else None
+            if de_ratio is None and total_eq and total_debt:
+                de_ratio = total_debt[0] / total_eq[0] if total_eq[0] else None
+            de_pass = de_ratio is not None and de_ratio < 0.5
+            scores["de"]   = 1 if de_pass else 0
+            details["de"]  = f"D/E={round(de_ratio,2) if de_ratio is not None else 'N/A'}"
+
+            # 5. Net Margin
+            rev_vals = col_values(fin, "Total Revenue", "Revenue")
+            ni_vals  = col_values(fin, "Net Income")
+            nm_vals  = [ni_vals[i]/rev_vals[i] for i in range(min(len(rev_vals),len(ni_vals))) if rev_vals[i]]
+            nm_pass  = bool(nm_vals) and sum(1 for m in nm_vals if m > 0.20) >= len(nm_vals) * 0.6
+            scores["netmargin"]   = 1 if nm_pass else 0
+            details["netmargin"]  = f"最新Net Margin {round(nm_vals[0]*100,1) if nm_vals else 'N/A'}%"
+
+            # 6. 配息
+            div_rate  = info.get("dividendRate") or 0
+            div_hist  = tk.dividends
+            div_years = 0
+            if div_hist is not None and not div_hist.empty:
+                div_years = div_hist.resample("Y").sum().astype(bool).sum()
+            div_pass = div_years >= 3 or div_rate > 0
+            scores["dividend"]   = 1 if div_pass else 0
+            details["dividend"]  = f"近{div_years}年有配息"
+
+            fin_score = sum(scores.values())
+
+            return {
+                "ticker":      ticker_str,
+                "name":        name,
+                "sector":      sector,
+                "industry":    industry,
+                "market_cap":  mkt_cap,
+                "price":       price,
+                "summary":     summary,
+                "fin_score":   fin_score,
+                "moat_score":  0,
+                "total_score": fin_score,
+                "scores":      scores,
+                "details":     details,
+                "updated":     datetime.now().strftime("%Y-%m-%d"),
+            }
+
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(3)
+
+    return None
+
+
+# ── 主流程 ────────────────────────────────────────────────────────────────
+def main():
+    os.makedirs("data", exist_ok=True)
+
+    tickers = get_us_tickers()
+    results, failed = [], []
+
+    for i, ticker in enumerate(tickers):
+        print(f"[{i+1}/{len(tickers)}] {ticker}", end=" ... ")
+        r = score_ticker(ticker)
+        if r:
+            results.append(r)
+            print(f"✓ fin={r['fin_score']}/6")
+        else:
+            failed.append(ticker)
+            print("skip")
+        if (i + 1) % 50 == 0:
+            time.sleep(5)
+
+    results.sort(key=lambda x: x["fin_score"], reverse=True)
+
+    output = {
+        "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "market":  "US",
+        "total":   len(results),
+        "failed":  len(failed),
+        "results": results,
+    }
+
+    with open("data/us_results.json", "w", encoding="utf-8") as f:
+        json.dump(output, f, ensure_ascii=False, indent=2)
+
+    print(f"\n✅ 完成！共 {len(results)} 支，失敗 {len(failed)} 支")
+
+
+if __name__ == "__main__":
+    main()
+
+"""
+MoatScan - 台股全市場篩選腳本
+每天收盤後由 GitHub Actions 自動執行
+輸出：data/tw_results.json
+"""
+
+import yfinance as yf
+import pandas as pd
+import json
+import requests
+import time
+import math
+from datetime import datetime
+
+# ── 取得台股全部上市/上櫃代號 ─────────────────────────────────────────────
+def get_tw_tickers():
+    tickers = []
+
+    # 上市 (TSE) - TWSE 開放資料
+    try:
+        url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
+        r = requests.get(url, timeout=15)
+        data = r.json()
+        for row in data:
+            code = row.get("Code", "")
+            if code.isdigit() and len(code) == 4:
+                tickers.append(f"{code}.TW")
+    except Exception as e:
+        print(f"[警告] TSE 清單抓取失敗: {e}")
+
+    # 上櫃 (OTC) - TPEx 開放資料
+    try:
+        url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
+        r = requests.get(url, timeout=15)
+        data = r.json()
+        for row in data:
+            code = row.get("SecuritiesCompanyCode", "")
+            if code.isdigit() and len(code) == 4:
+                tickers.append(f"{code}.TWO")
+    except Exception as e:
+        print(f"[警告] OTC 清單抓取失敗: {e}")
+
+    tickers = list(set(tickers))
+    print(f"[INFO] 共取得 {len(tickers)} 支台股代號")
+    return tickers
+
+
+# ── 單支股票評分 ───────────────────────────────────────────────────────────
+def score_ticker(ticker_str, retries=2):
+    for attempt in range(retries):
+        try:
+            tk = yf.Ticker(ticker_str)
+            info = tk.info
+
+            # 基本資訊
+            name = info.get("longName") or info.get("shortName") or ticker_str
+            sector = info.get("sector", "未知")
+            industry = info.get("industry", "未知")
+            mkt_cap = info.get("marketCap", 0)
+            price = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+            summary = (info.get("longBusinessSummary") or "")[:300]
+
+            # 若市值 < 50億台幣（~1.5億美元）跳過，避免微型股雜訊
+            if mkt_cap and mkt_cap < 150_000_000:
+                return None
+
+            scores = {}
+            details = {}
+
+            # ── 財務報表 ────────────────────────────────────────────────
+            fin = tk.financials          # 損益表 (年, index=科目, columns=日期)
+            cf  = tk.cashflow            # 現金流量表
+            bs  = tk.balance_sheet       # 資產負債表
+
+            # 轉為「年份由新到舊」的 list
+            def col_values(df, *keys):
+                for key in keys:
+                    if df is not None and not df.empty:
+                        for idx in df.index:
+                            if key.lower() in str(idx).lower():
+                                return df.loc[idx].dropna().tolist()
+                return []
+
+            # 1. EPS ─────────────────────────────────────────────────────
+            eps_vals = col_values(fin, "Basic EPS", "Diluted EPS", "EPS")
+            if not eps_vals:
+                # fallback: trailingEPS from info
+                te = info.get("trailingEps")
+                eps_vals = [te] if te else []
+
+            eps_pass = False
+            if len(eps_vals) >= 2:
+                positive_count = sum(1 for v in eps_vals if v and v > 0)
+                # 趨勢：最新 >= 最舊的 80%
+                trend_ok = eps_vals[0] >= eps_vals[-1] * 0.8 if eps_vals[-1] and eps_vals[-1] > 0 else False
+                eps_pass = (positive_count >= len(eps_vals) * 0.75) and trend_ok
+            scores["eps"] = 1 if eps_pass else 0
+            details["eps"] = f"{len(eps_vals)}年資料，最新${round(eps_vals[0],2) if eps_vals else 'N/A'}"
+
+            # 2. FCF ──────────────────────────────────────────────────────
+            op_cf   = col_values(cf, "Operating Cash Flow", "Cash From Operations")
+            cap_ex  = col_values(cf, "Capital Expenditure", "Purchase Of PPE")
+            fcf_vals = []
+            for i in range(min(len(op_cf), len(cap_ex))):
+                cap = cap_ex[i] if cap_ex[i] else 0
+                fcf_vals.append(op_cf[i] - abs(cap))
+
+            fcf_pass = False
+            if len(fcf_vals) >= 2:
+                positive_count = sum(1 for v in fcf_vals if v > 0)
+                fcf_pass = positive_count >= len(fcf_vals) * 0.8
+            scores["fcf"] = 1 if fcf_pass else 0
+            details["fcf"] = f"{sum(1 for v in fcf_vals if v>0)}/{len(fcf_vals)}年為正"
+
+            # 3. ROIC > 10% ───────────────────────────────────────────────
+            ebit_vals  = col_values(fin, "EBIT", "Operating Income")
+            tax_rate   = info.get("effectiveTaxRate", 0.2)
+            total_eq   = col_values(bs, "Stockholders Equity", "Total Equity")
+            total_debt = col_values(bs, "Total Debt", "Long Term Debt")
+
+            roic_vals = []
+            for i in range(min(len(ebit_vals), len(total_eq), len(total_debt))):
+                nopat = ebit_vals[i] * (1 - tax_rate)
+                invested = (total_eq[i] or 0) + (total_debt[i] or 0)
+                if invested > 0:
+                    roic_vals.append(nopat / invested)
+
+            roic_pass = False
+            if roic_vals:
+                above_10 = sum(1 for r in roic_vals if r > 0.10)
+                roic_pass = above_10 >= len(roic_vals) * 0.7
+            scores["roic"] = 1 if roic_pass else 0
+            details["roic"] = f"最新{round(roic_vals[0]*100,1) if roic_vals else 'N/A'}%"
+
+            # 4. D/E < 0.5 ────────────────────────────────────────────────
+            de = info.get("debtToEquity")
+            if de is None and total_eq and total_debt:
+                de = (total_debt[0] / total_eq[0]) * 100 if total_eq[0] else None
+            # yfinance debtToEquity 以百分比表示 (e.g. 45 = 0.45)
+            de_ratio = de / 100 if de is not None else None
+            de_pass  = de_ratio is not None and de_ratio < 0.5
+            scores["de"] = 1 if de_pass else 0
+            details["de"] = f"D/E={round(de_ratio,2) if de_ratio is not None else 'N/A'}"
+
+            # 5. Net Margin > 20% ─────────────────────────────────────────
+            rev_vals    = col_values(fin, "Total Revenue", "Revenue")
+            ni_vals     = col_values(fin, "Net Income")
+            nm_vals = []
+            for i in range(min(len(rev_vals), len(ni_vals))):
+                if rev_vals[i] and rev_vals[i] != 0:
+                    nm_vals.append(ni_vals[i] / rev_vals[i])
+
+            nm_pass = False
+            if nm_vals:
+                above_20 = sum(1 for m in nm_vals if m > 0.20)
+                nm_pass  = above_20 >= len(nm_vals) * 0.6
+            scores["netmargin"] = 1 if nm_pass else 0
+            details["netmargin"] = f"最新{round(nm_vals[0]*100,1) if nm_vals else 'N/A'}%"
+
+            # 6. 配息 ─────────────────────────────────────────────────────
+            div_rate  = info.get("dividendRate") or 0
+            div_yield = info.get("dividendYield") or 0
+            div_hist  = tk.dividends
+            div_years = 0
+            if div_hist is not None and not div_hist.empty:
+                div_years = div_hist.resample("Y").sum().astype(bool).sum()
+            div_pass = div_years >= 3 or (div_rate > 0 and div_yield > 0)
+            scores["dividend"] = 1 if div_pass else 0
+            details["dividend"] = f"近{div_years}年有配息"
+
+            # ── 總分計算 ──────────────────────────────────────────────────
+            fin_score = sum(scores.values())
+
+            return {
+                "ticker":     ticker_str,
+                "name":       name,
+                "sector":     sector,
+                "industry":   industry,
+                "market_cap": mkt_cap,
+                "price":      price,
+                "summary":    summary,
+                "fin_score":  fin_score,
+                "moat_score": 0,          # 前端手動設定
+                "total_score": fin_score, # 護城河加上去後更新
+                "scores":     scores,
+                "details":    details,
+                "updated":    datetime.now().strftime("%Y-%m-%d"),
+            }
+
+        except Exception as e:
+            if attempt < retries - 1:
+                time.sleep(3)
+            else:
+                return None
+
+    return None
+
+
+# ── 主流程 ────────────────────────────────────────────────────────────────
+def main():
+    import os
+    os.makedirs("data", exist_ok=True)
+
+    tickers = get_tw_tickers()
+
+    results = []
+    failed  = []
+    total   = len(tickers)
+
+    for i, ticker in enumerate(tickers):
+        print(f"[{i+1}/{total}] {ticker}", end=" ... ")
+        result = score_ticker(ticker)
+        if result:
+            results.append(result)
+            print(f"✓ fin={result['fin_score']}/6")
+        else:
+            failed.append(ticker)
+            print("skip")
+
+        # 每50支暫停一下，避免被 Yahoo 封鎖
+        if (i + 1) % 50 == 0:
+            time.sleep(5)
+
+    # 依財務分數排序
+    results.sort(key=lambda x: x["fin_score"], reverse=True)
+
+    # 存檔
+    output = {
+        "updated":  datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "market":   "TW",
+        "total":    len(results),
+        "failed":   len(failed),
+        "results":  results,
+    }
+
+    with open("data/tw_results.json", "w", encoding="utf-8") as f:
+        json.dump(output, f, ensure_ascii=False, indent=2)
+
+    print(f"\n✅ 完成！共 {len(results)} 支，失敗 {len(failed)} 支")
+    print(f"財務6分：{sum(1 for r in results if r['fin_score']==6)} 支")
+    print(f"財務5分：{sum(1 for r in results if r['fin_score']==5)} 支")
+    print(f"財務4分：{sum(1 for r in results if r['fin_score']==4)} 支")
+
+
+if __name__ == "__main__":
+    main()
+
+import { useState, useEffect, useMemo } from "react";
+
+// ── 填入你的 GitHub raw 網址 ──────────────────────────────────────────────
+const DATA_URLS = {
+  TW: "https://raw.githubusercontent.com/YOUR_USERNAME/moatscan/main/data/tw_results.json",
+  US: "https://raw.githubusercontent.com/YOUR_USERNAME/moatscan/main/data/us_results.json",
+};
+
+// ── 示範資料（GitHub 設定好之前先用這個測試）────────────────────────────
+const DEMO_DATA = {
+  TW: {
+    updated: "2026-03-11 15:00", market: "TW", total: 8, failed: 0,
+    results: [
+      { ticker:"2330.TW", name:"台積電", sector:"Technology", industry:"Semiconductors", market_cap:18000000000000, price:910, summary:"台灣積體電路製造股份有限公司是全球最大的專業積體電路製造服務企業，提供邏輯積體電路製造服務。", fin_score:6, moat_score:0, total_score:6, scores:{eps:1,fcf:1,roic:1,de:1,netmargin:1,dividend:1}, details:{eps:"最新EPS $42.3",fcf:"4/4年FCF為正",roic:"最新ROIC 28.5%",de:"D/E=0.21",netmargin:"最新Net Margin 38.9%",dividend:"近4年有配息"}, updated:"2026-03-11" },
+      { ticker:"2454.TW", name:"聯發科", sector:"Technology", industry:"Semiconductors", market_cap:1800000000000, price:1150, summary:"聯發科技股份有限公司設計各種半導體系統晶片，廣泛應用於行動通訊、家用多媒體等領域。", fin_score:5, moat_score:0, total_score:5, scores:{eps:1,fcf:1,roic:1,de:1,netmargin:1,dividend:0}, details:{eps:"最新EPS $85.2",fcf:"4/4年FCF為正",roic:"最新ROIC 22.1%",de:"D/E=0.12",netmargin:"最新Net Margin 22.3%",dividend:"近1年有配息"}, updated:"2026-03-11" },
+      { ticker:"2412.TW", name:"中華電信", sector:"Communication Services", industry:"Telecom", market_cap:800000000000, price:117, summary:"中華電信股份有限公司為台灣最大電信業者，提供固網、行動通信及寬頻網路服務。", fin_score:5, moat_score:0, total_score:5, scores:{eps:1,fcf:1,roic:0,de:1,netmargin:1,dividend:1}, details:{eps:"最新EPS $4.82",fcf:"4/4年FCF為正",roic:"最新ROIC 8.2%",de:"D/E=0.38",netmargin:"最新Net Margin 21.4%",dividend:"近4年有配息"}, updated:"2026-03-11" },
+      { ticker:"6505.TW", name:"台塑化", sector:"Energy", industry:"Oil & Gas", market_cap:600000000000, price:87, summary:"台灣中油股份有限公司關係企業，主要從事石油化工原料之製造及銷售。", fin_score:4, moat_score:0, total_score:4, scores:{eps:1,fcf:0,roic:1,de:1,netmargin:1,dividend:0}, details:{eps:"最新EPS $3.1",fcf:"2/4年FCF為正",roic:"最新ROIC 11.2%",de:"D/E=0.31",netmargin:"最新Net Margin 20.8%",dividend:"近2年有配息"}, updated:"2026-03-11" },
+      { ticker:"1301.TW", name:"台塑", sector:"Basic Materials", industry:"Chemicals", market_cap:500000000000, price:72, summary:"台灣塑膠工業股份有限公司從事聚氯乙烯、塑膠加工品及化學品之製造銷售。", fin_score:4, moat_score:0, total_score:4, scores:{eps:1,fcf:1,roic:0,de:1,netmargin:0,dividend:1}, details:{eps:"最新EPS $2.8",fcf:"3/4年FCF為正",roic:"最新ROIC 7.8%",de:"D/E=0.45",netmargin:"最新Net Margin 16.2%",dividend:"近4年有配息"}, updated:"2026-03-11" },
+    ]
+  },
+  US: {
+    updated: "2026-03-11 22:00", market: "US", total: 6, failed: 0,
+    results: [
+      { ticker:"AAPL", name:"Apple Inc.", sector:"Technology", industry:"Consumer Electronics", market_cap:3200000000000, price:212, summary:"Apple Inc. designs, manufactures, and markets smartphones, personal computers, tablets, wearables, and accessories worldwide.", fin_score:6, moat_score:0, total_score:6, scores:{eps:1,fcf:1,roic:1,de:0,netmargin:1,dividend:1}, details:{eps:"最新EPS $6.13",fcf:"4/4年FCF為正",roic:"最新ROIC 54.2%",de:"D/E=1.87",netmargin:"最新Net Margin 25.3%",dividend:"近4年有配息"}, updated:"2026-03-11" },
+      { ticker:"MSFT", name:"Microsoft Corp.", sector:"Technology", industry:"Software", market_cap:2900000000000, price:389, summary:"Microsoft Corporation develops and supports software, services, devices and solutions worldwide.", fin_score:6, moat_score:0, total_score:6, scores:{eps:1,fcf:1,roic:1,de:1,netmargin:1,dividend:1}, details:{eps:"最新EPS $11.45",fcf:"4/4年FCF為正",roic:"最新ROIC 28.9%",de:"D/E=0.38",netmargin:"最新Net Margin 35.6%",dividend:"近4年有配息"}, updated:"2026-03-11" },
+      { ticker:"V", name:"Visa Inc.", sector:"Financial Services", industry:"Credit Services", market_cap:580000000000, price:278, summary:"Visa Inc. operates as a payments technology company worldwide.", fin_score:5, moat_score:0, total_score:5, scores:{eps:1,fcf:1,roic:1,de:1,netmargin:1,dividend:0}, details:{eps:"最新EPS $9.37",fcf:"4/4年FCF為正",roic:"最新ROIC 32.1%",de:"D/E=0.41",netmargin:"最新Net Margin 51.2%",dividend:"近3年有配息"}, updated:"2026-03-11" },
+      { ticker:"KO", name:"Coca-Cola Co.", sector:"Consumer Defensive", industry:"Beverages", market_cap:260000000000, price:60, summary:"The Coca-Cola Company manufactures, markets, and sells various nonalcoholic beverages worldwide.", fin_score:4, moat_score:0, total_score:4, scores:{eps:1,fcf:1,roic:0,de:0,netmargin:1,dividend:1}, details:{eps:"最新EPS $2.47",fcf:"4/4年FCF為正",roic:"最新ROIC 11.8%",de:"D/E=2.14",netmargin:"最新Net Margin 22.6%",dividend:"近4年有配息"}, updated:"2026-03-11" },
+    ]
+  }
+};
+
+const MOAT_TYPES = [
+  { id:"brand",    label:"品牌",   icon:"™" },
+  { id:"patent",   label:"專利",   icon:"⚗" },
+  { id:"license",  label:"特許",   icon:"📜" },
+  { id:"switching",label:"轉換成本",icon:"🔒" },
+  { id:"network",  label:"網絡效應",icon:"🌐" },
+  { id:"cost",     label:"成本優勢",icon:"⚙" },
+  { id:"scale",    label:"規模優勢",icon:"📊" },
+];
+
+const METRIC_LABELS = { eps:"EPS", fcf:"FCF", roic:"ROIC", de:"D/E", netmargin:"Net Margin", dividend:"配息" };
+
+const FIN_COLOR = (s) => s === 6 ? "#00c853" : s === 5 ? "#ffd600" : s === 4 ? "#ff6d00" : "#ff4757";
+const FIN_BG    = (s) => s === 6 ? "#00c85318" : s === 5 ? "#ffd60018" : s === 4 ? "#ff6d0018" : "#ff475718";
+const FIN_LABEL = (s) => s === 6 ? "優秀" : s === 5 ? "良好" : s === 4 ? "尚可" : "不足";
+const TOTAL_COLOR = (s) => s >= 7 ? "#00c853" : s >= 5 ? "#ffd600" : "#ff4757";
+
+const fmt_cap = (v, market) => {
+  if (!v) return "N/A";
+  if (market === "TW") return (v / 1e8).toFixed(0) + " 億台幣";
+  const b = v / 1e9;
+  return b >= 1000 ? (v/1e12).toFixed(1) + "T" : b.toFixed(0) + "B USD";
+};
+
+// ── 板塊熱圖 ──────────────────────────────────────────────────────────────
+function SectorHeatmap({ data }) {
+  const sectors = useMemo(() => {
+    const map = {};
+    (data || []).forEach(r => {
+      const s = r.sector || "其他";
+      if (!map[s]) map[s] = { name: s, count: 0, avg: 0, high: 0, stocks: [] };
+      map[s].count++;
+      map[s].avg += r.fin_score;
+      if (r.fin_score >= 5) map[s].high++;
+      map[s].stocks.push(r.ticker);
+    });
+    return Object.values(map).map(s => ({ ...s, avg: s.avg / s.count })).sort((a,b) => b.high - a.high);
+  }, [data]);
+
+  const maxHigh = Math.max(...sectors.map(s => s.high), 1);
+
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div style={{ fontSize: 9, color: "#3a4a6a", letterSpacing: "0.2em", marginBottom: 12 }}>▸ 板塊分佈（財務5-6分股票數量）</div>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {sectors.map(s => {
+          const intensity = s.high / maxHigh;
+          const bg = s.high >= 3 ? `rgba(0,200,83,${0.08 + intensity * 0.2})` : s.high >= 1 ? "rgba(255,214,0,0.08)" : "#0d1120";
+          const border = s.high >= 3 ? "#00c85333" : s.high >= 1 ? "#ffd60033" : "#1a2035";
+          return (
+            <div key={s.name} style={{ background: bg, border: `1px solid ${border}`, borderRadius: 8, padding: "8px 12px", minWidth: 100 }}>
+              <div style={{ fontSize: 10, color: "#8a9ab8", marginBottom: 3 }}>{s.name}</div>
+              <div style={{ fontSize: 11, fontFamily: "'Barlow Condensed', sans-serif", fontWeight: 700 }}>
+                <span style={{ color: s.high >= 3 ? "#00c853" : s.high >= 1 ? "#ffd600" : "#3a4a6a" }}>{s.high}</span>
+                <span style={{ color: "#2a3555" }}> / {s.count}</span>
+              </div>
+              <div style={{ fontSize: 9, color: "#2a3555" }}>avg {s.avg.toFixed(1)}/6</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── 公司詳情彈窗 ──────────────────────────────────────────────────────────
+function CompanyModal({ stock, market, onClose, onMoatUpdate }) {
+  const [moats, setMoats] = useState([]);
+  const [moatScore, setMoatScore] = useState(stock.moat_score || 0);
+  const [translating, setTranslating] = useState(false);
+  const [translated, setTranslated] = useState("");
+
+  const toggleMoat = (id) => {
+    const next = moats.includes(id) ? moats.filter(m => m !== id) : [...moats, id];
+    setMoats(next);
+    const suggested = next.length === 0 ? 0 : next.length === 1 ? 1 : next.length <= 3 ? 2 : 3;
+    setMoatScore(suggested);
+  };
+
+  const handleSave = () => { onMoatUpdate(stock.ticker, moatScore, moats); onClose(); };
+
+  const translateSummary = async () => {
+    if (!stock.summary) return;
+    setTranslating(true);
+    try {
+      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&q=${encodeURIComponent(stock.summary)}`;
+      const res = await fetch(url);
+      const data = await res.json();
+      const text = data[0].map(s => s[0]).join("");
+      setTranslated(text);
+    } catch { setTranslated("翻譯失敗，請稍後再試"); }
+    finally { setTranslating(false); }
+  };
+
+  const total = (stock.fin_score || 0) + moatScore;
+
+  return (
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", zIndex:100, display:"flex", alignItems:"center", justifyContent:"center", padding:16 }} onClick={onClose}>
+      <div style={{ background:"#0d1120", border:"1px solid #2a3555", borderRadius:14, width:"100%", maxWidth:580, maxHeight:"90vh", overflowY:"auto", padding:24 }} onClick={e => e.stopPropagation()}>
+
+        {/* Header */}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:20 }}>
+          <div>
+            <div style={{ display:"flex", alignItems:"center", gap: 10, marginBottom:4 }}>
+              <span style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight:900, fontSize:26, color:"#e8f0ff" }}>{stock.ticker}</span>
+              <span style={{ background:"#1a2035", padding:"2px 8px", borderRadius:4, fontSize:9, color:"#4a5a7a", letterSpacing:"0.1em" }}>{market}</span>
+            </div>
+            <div style={{ color:"#8a9ab8", fontSize:13 }}>{stock.name}</div>
+            <div style={{ display:"flex", gap:6, marginTop:6, flexWrap:"wrap" }}>
+              <span style={{ background:"#0a1525", border:"1px solid #1a2035", borderRadius:4, padding:"2px 8px", fontSize:10, color:"#f0b90b" }}>{stock.sector}</span>
+              <span style={{ background:"#0a1525", border:"1px solid #1a2035", borderRadius:4, padding:"2px 8px", fontSize:10, color:"#4a5a7a" }}>{stock.industry}</span>
+            </div>
+          </div>
+          <div style={{ textAlign:"right" }}>
+            <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight:900, fontSize:36, color:TOTAL_COLOR(total) }}>{total}<span style={{ fontSize:14, color:"#3a4a6a" }}>/9</span></div>
+            <div style={{ fontSize:9, color:total >= 7 ? "#00c853" : "#ff4757" }}>{total >= 7 ? "✦ 達標" : "未達標"}</div>
+          </div>
+        </div>
+
+        {/* Financial Scores */}
+        <div style={{ background:"#080c18", borderRadius:8, padding:14, marginBottom:16 }}>
+          <div style={{ fontSize:9, color:"#3a4a6a", letterSpacing:"0.15em", marginBottom:10 }}>財務指標 {stock.fin_score}/6</div>
+          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:6 }}>
+            {Object.entries(stock.scores || {}).map(([k,v]) => (
+              <div key={k} style={{ display:"flex", alignItems:"center", gap:7, padding:"5px 8px", background:"#0d1120", borderRadius:5, border:`1px solid ${v ? "#00c85322" : "#1a2035"}` }}>
+                <span style={{ color: v ? "#00c853" : "#ff4757", fontSize:11 }}>{v ? "✓" : "✗"}</span>
+                <div style={{ flex:1 }}>
+                  <div style={{ fontSize:10, color:"#8a9ab8" }}>{METRIC_LABELS[k]}</div>
+                  <div style={{ fontSize:9, color:"#3a4a6a" }}>{stock.details?.[k]}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Moat Scoring */}
+        <div style={{ background:"#080c18", borderRadius:8, padding:14, marginBottom:16 }}>
+          <div style={{ fontSize:9, color:"#3a4a6a", letterSpacing:"0.15em", marginBottom:10 }}>護城河評分（手動）</div>
+          <div style={{ display:"flex", flexWrap:"wrap", gap:6, marginBottom:12 }}>
+            {MOAT_TYPES.map(m => (
+              <button key={m.id} onClick={() => toggleMoat(m.id)}
+                style={{ background: moats.includes(m.id) ? "#f0b90b11" : "transparent", border:`1.5px solid ${moats.includes(m.id) ? "#f0b90b66" : "#1a2035"}`, borderRadius:6, padding:"5px 10px", color: moats.includes(m.id) ? "#f0b90b" : "#3a4a6a", fontSize:11, cursor:"pointer", transition:"all 0.2s" }}>
+                {m.icon} {m.label}
+              </button>
+            ))}
+          </div>
+          <div style={{ display:"flex", gap:6 }}>
+            {[0,1,2,3].map(v => {
+              const c = ["#ff4757","#ff6d00","#ffd600","#00c853"][v];
+              return (
+                <button key={v} onClick={() => setMoatScore(v)}
+                  style={{ flex:1, padding:"10px 0", background: moatScore === v ? c+"22" : "#080c18", border:`1.5px solid ${moatScore === v ? c : "#1a2035"}`, borderRadius:6, color: moatScore === v ? c : "#3a4a6a", fontFamily:"'Barlow Condensed',sans-serif", fontWeight:700, fontSize:18, cursor:"pointer", transition:"all 0.2s" }}>
+                  {v}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Business Summary */}
+        {stock.summary && (
+          <div style={{ background:"#080c18", borderRadius:8, padding:14, marginBottom:16 }}>
+            <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:8 }}>
+              <div style={{ fontSize:9, color:"#3a4a6a", letterSpacing:"0.15em" }}>業務簡介</div>
+              {market === "US" && !translated && (
+                <button onClick={translateSummary} disabled={translating}
+                  style={{ background:"none", border:"1px solid #1a2035", borderRadius:4, padding:"3px 8px", color:translating?"#3a4a6a":"#4a8aff", fontSize:10, cursor:"pointer", fontFamily:"'DM Mono',monospace" }}>
+                  {translating ? "翻譯中..." : "🌐 中文翻譯"}
+                </button>
+              )}
+            </div>
+            <div style={{ fontSize:11, color:"#8a9ab8", lineHeight:1.8 }}>{translated || stock.summary}</div>
+          </div>
+        )}
+
+        <div style={{ display:"flex", gap:8 }}>
+          <button onClick={handleSave}
+            style={{ flex:1, padding:"11px 0", background:"linear-gradient(135deg,#f0b90b,#d4941a)", border:"none", borderRadius:7, color:"#080c18", fontFamily:"'Barlow Condensed',sans-serif", fontWeight:700, fontSize:14, letterSpacing:"0.1em", cursor:"pointer" }}>
+            儲存護城河評分
+          </button>
+          <button onClick={onClose}
+            style={{ padding:"11px 20px", background:"none", border:"1px solid #1a2035", borderRadius:7, color:"#4a5a7a", fontFamily:"'DM Mono',monospace", fontSize:12, cursor:"pointer" }}>
+            關閉
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 股票列表卡片 ──────────────────────────────────────────────────────────
+function StockRow({ stock, market, onSelect }) {
+  const total = (stock.fin_score || 0) + (stock.moat_score || 0);
+  return (
+    <div onClick={() => onSelect(stock)}
+      style={{ background:"#0d1120", border:`1px solid ${FIN_COLOR(stock.fin_score)}22`, borderRadius:10, padding:"12px 16px", display:"flex", alignItems:"center", gap:12, cursor:"pointer", transition:"all 0.2s", marginBottom:8 }}
+      onMouseEnter={e => e.currentTarget.style.borderColor = FIN_COLOR(stock.fin_score)+"66"}
+      onMouseLeave={e => e.currentTarget.style.borderColor = FIN_COLOR(stock.fin_score)+"22"}>
+
+      {/* Score Badge */}
+      <div style={{ width:48, height:48, borderRadius:10, background:FIN_BG(stock.fin_score), border:`1.5px solid ${FIN_COLOR(stock.fin_score)}55`, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
+        <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight:900, fontSize:20, color:FIN_COLOR(stock.fin_score), lineHeight:1 }}>{stock.fin_score}</div>
+        <div style={{ fontSize:8, color:"#3a4a6a" }}>/ 6</div>
+      </div>
+
+      {/* Info */}
+      <div style={{ flex:1, minWidth:0 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:3 }}>
+          <span style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight:700, fontSize:16, color:"#e8f0ff" }}>{stock.ticker.replace(".TW","").replace(".TWO","")}</span>
+          <span style={{ fontSize:11, color:"#6a7a9a", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{stock.name}</span>
+        </div>
+        <div style={{ display:"flex", gap:6, flexWrap:"wrap" }}>
+          <span style={{ fontSize:9, color:"#f0b90b", background:"#f0b90b11", padding:"1px 6px", borderRadius:3 }}>{stock.sector}</span>
+          <span style={{ fontSize:9, color:"#3a4a6a" }}>{fmt_cap(stock.market_cap, market)}</span>
+        </div>
+        {/* Mini score bar */}
+        <div style={{ display:"flex", gap:2, marginTop:6 }}>
+          {Object.entries(stock.scores || {}).map(([k,v]) => (
+            <div key={k} title={METRIC_LABELS[k]} style={{ flex:1, height:3, borderRadius:2, background: v ? FIN_COLOR(stock.fin_score) : "#1a2035", transition:"background 0.3s" }} />
+          ))}
+        </div>
+      </div>
+
+      {/* Right: total + moat */}
+      <div style={{ textAlign:"right", flexShrink:0 }}>
+        {stock.moat_score > 0 && (
+          <div style={{ fontSize:9, color:"#f0b90b", marginBottom:2 }}>護城河 +{stock.moat_score}</div>
+        )}
+        <div style={{ fontFamily:"'Barlow Condensed',sans-serif", fontWeight:700, fontSize:14, color:total >= 7 ? "#00c853" : "#3a4a6a" }}>
+          {total >= 7 ? `總分 ${total} ✦` : `總分 ${total}`}
+        </div>
+        <div style={{ fontSize:9, color:"#2a3555" }}>點擊評分護城河</div>
+      </div>
+    </div>
+  );
+}
+
+// ── 主 App ────────────────────────────────────────────────────────────────
+export default function MoatScanApp() {
+  const [market, setMarket] = useState("TW");
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [useDemo, setUseDemo] = useState(false);
+  const [selected, setSelected] = useState(null);
+  const [moatMap, setMoatMap] = useState({});   // { ticker: { score, types } }
+  const [filterMin, setFilterMin] = useState(4);
+  const [sortBy, setSortBy] = useState("fin_score");
+  const [search, setSearch] = useState("");
+  const [sectorFilter, setSectorFilter] = useState("全部");
+
+  const loadData = async (mkt, demo) => {
+    setLoading(true); setError(""); setData(null);
+    if (demo) { await new Promise(r => setTimeout(r, 600)); setData(DEMO_DATA[mkt]); setLoading(false); return; }
+    try {
+      const url = DATA_URLS[mkt];
+      if (url.includes("YOUR_USERNAME")) { setError("請先設定 DATA_URLS 中的 GitHub 帳號"); setLoading(false); return; }
+      const res = await fetch(url + "?t=" + Date.now());
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setData(await res.json());
+    } catch (e) { setError(e.message); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { loadData(market, useDemo); }, [market, useDemo]);
+
+  const handleMoatUpdate = (ticker, score, types) => {
+    setMoatMap(prev => ({ ...prev, [ticker]: { score, types } }));
+  };
+
+  const enriched = useMemo(() => {
+    if (!data?.results) return [];
+    return data.results.map(r => ({
+      ...r,
+      moat_score: moatMap[r.ticker]?.score ?? r.moat_score ?? 0,
+      moat_types: moatMap[r.ticker]?.types ?? [],
+      total_score: r.fin_score + (moatMap[r.ticker]?.score ?? r.moat_score ?? 0),
+    }));
+  }, [data, moatMap]);
+
+  const sectors = useMemo(() => ["全部", ...Array.from(new Set(enriched.map(r => r.sector).filter(Boolean)))], [enriched]);
+
+  const filtered = useMemo(() => {
+    let list = enriched.filter(r => r.fin_score >= filterMin);
+    if (sectorFilter !== "全部") list = list.filter(r => r.sector === sectorFilter);
+    if (search) list = list.filter(r => r.ticker.toLowerCase().includes(search.toLowerCase()) || r.name?.toLowerCase().includes(search.toLowerCase()));
+    list.sort((a,b) => b[sortBy] - a[sortBy]);
+    return list;
+  }, [enriched, filterMin, sectorFilter, search, sortBy]);
+
+  const qualified = filtered.filter(r => r.total_score >= 7);
+
+  return (
+    <div style={{ minHeight:"100vh", background:"#080c18", fontFamily:"'DM Mono',monospace", color:"#c8d6ef" }}>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Barlow+Condensed:wght@600;700;900&display=swap');
+        *{box-sizing:border-box;margin:0;padding:0;}
+        input,select{outline:none;}button{cursor:pointer;}
+        ::placeholder{color:#2a3555;}
+        select option{background:#0d1120;color:#c8d6ef;}
+        ::-webkit-scrollbar{width:4px;}::-webkit-scrollbar-thumb{background:#2a3555;border-radius:2px;}
+        @keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+        .fade{animation:fadeUp 0.4s ease}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        .spin{animation:spin 1s linear infinite}
+      `}</style>
+
+      {/* Header */}
+      <div style={{ borderBottom:"1px solid #1a2035", padding:"0 20px", display:"flex", alignItems:"center", justifyContent:"space-between", height:50, flexWrap:"wrap", gap:8 }}>
+        <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+          <div style={{ width:26,height:26,background:"linear-gradient(135deg,#f0b90b,#d4941a)",borderRadius:6,display:"flex",alignItems:"center",justifyContent:"center" }}>
+            <span style={{ color:"#080c18",fontSize:13,fontWeight:700 }}>⬡</span>
+          </div>
+          <span style={{ fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:17,letterSpacing:"0.12em",color:"#e8f0ff" }}>
+            MOAT<span style={{ color:"#f0b90b" }}>SCAN</span>
+            <span style={{ fontSize:9,color:"#2a3555",marginLeft:8,fontWeight:400 }}>全市場篩選</span>
+          </span>
+        </div>
+        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+          <label style={{ fontSize:10,color:"#3a4a6a",display:"flex",alignItems:"center",gap:5,cursor:"pointer" }}>
+            <input type="checkbox" checked={useDemo} onChange={e => setUseDemo(e.target.checked)} style={{ accentColor:"#f0b90b" }} />
+            示範資料
+          </label>
+          {["TW","US"].map(m => (
+            <button key={m} onClick={() => setMarket(m)}
+              style={{ padding:"5px 14px",background:market===m?"linear-gradient(135deg,#f0b90b,#d4941a)":"none",border:`1px solid ${market===m?"transparent":"#1a2035"}`,borderRadius:5,color:market===m?"#080c18":"#3a4a6a",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:13,letterSpacing:"0.1em" }}>
+              {m === "TW" ? "🇹🇼 台股" : "🇺🇸 美股"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ maxWidth:900, margin:"0 auto", padding:"20px 16px" }}>
+
+        {/* Stats Bar */}
+        {data && (
+          <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap" }}>
+            {[
+              { label:"掃描股票", val: data.total },
+              { label:"財務4分↑", val: enriched.filter(r=>r.fin_score>=4).length, color:"#ff6d00" },
+              { label:"財務5分↑", val: enriched.filter(r=>r.fin_score>=5).length, color:"#ffd600" },
+              { label:"財務6分", val: enriched.filter(r=>r.fin_score===6).length, color:"#00c853" },
+              { label:"已評分達標", val: qualified.length, color:"#00c853" },
+            ].map(item => (
+              <div key={item.label} style={{ background:"#0d1120",border:"1px solid #1a2035",borderRadius:8,padding:"8px 14px",textAlign:"center" }}>
+                <div style={{ fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:22,color:item.color||"#c8d6ef" }}>{item.val}</div>
+                <div style={{ fontSize:9,color:"#3a4a6a",letterSpacing:"0.1em" }}>{item.label}</div>
+              </div>
+            ))}
+            <div style={{ marginLeft:"auto",fontSize:9,color:"#2a3555",alignSelf:"center" }}>更新：{data.updated}</div>
+          </div>
+        )}
+
+        {/* Sector Heatmap */}
+        {data && <SectorHeatmap data={enriched} />}
+
+        {/* Filters */}
+        <div style={{ display:"flex", gap:8, marginBottom:16, flexWrap:"wrap" }}>
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="搜尋股票代號或公司名稱"
+            style={{ flex:"1 1 180px",background:"#0d1120",border:"1px solid #1a2035",borderRadius:6,padding:"8px 12px",color:"#c8d6ef",fontSize:12,fontFamily:"'DM Mono',monospace" }} />
+          <select value={sectorFilter} onChange={e => setSectorFilter(e.target.value)}
+            style={{ background:"#0d1120",border:"1px solid #1a2035",borderRadius:6,padding:"8px 12px",color:"#c8d6ef",fontSize:12,fontFamily:"'DM Mono',monospace" }}>
+            {sectors.map(s => <option key={s}>{s}</option>)}
+          </select>
+          <select value={filterMin} onChange={e => setFilterMin(Number(e.target.value))}
+            style={{ background:"#0d1120",border:"1px solid #1a2035",borderRadius:6,padding:"8px 12px",color:"#c8d6ef",fontSize:12,fontFamily:"'DM Mono',monospace" }}>
+            <option value={4}>財務 ≥ 4分</option>
+            <option value={5}>財務 ≥ 5分</option>
+            <option value={6}>財務 = 6分</option>
+          </select>
+          <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+            style={{ background:"#0d1120",border:"1px solid #1a2035",borderRadius:6,padding:"8px 12px",color:"#c8d6ef",fontSize:12,fontFamily:"'DM Mono',monospace" }}>
+            <option value="fin_score">財務分數排序</option>
+            <option value="total_score">總分排序</option>
+            <option value="market_cap">市值排序</option>
+          </select>
+        </div>
+
+        {/* List */}
+        {loading && (
+          <div style={{ textAlign:"center",padding:"60px 0",color:"#3a4a6a" }}>
+            <div className="spin" style={{ width:32,height:32,border:"3px solid #1a2035",borderTopColor:"#f0b90b",borderRadius:"50%",margin:"0 auto 16px" }} />
+            <div style={{ fontSize:11 }}>載入資料中...</div>
+          </div>
+        )}
+        {error && (
+          <div style={{ background:"#ff475711",border:"1px solid #ff475733",borderRadius:8,padding:16,color:"#ff4757",fontSize:12,marginBottom:16 }}>
+            ⚠ {error}<br/>
+            <span style={{ fontSize:10,color:"#ff475788" }}>請勾選「示範資料」先體驗功能，或確認 GitHub 設定</span>
+          </div>
+        )}
+        {!loading && data && (
+          <div className="fade">
+            <div style={{ fontSize:9,color:"#3a4a6a",letterSpacing:"0.15em",marginBottom:12 }}>
+              ▸ 顯示 {filtered.length} 支｜點擊任一股票可手動評分護城河
+            </div>
+            {filtered.map(stock => (
+              <StockRow key={stock.ticker} stock={stock} market={market} onSelect={setSelected} />
+            ))}
+            {filtered.length === 0 && (
+              <div style={{ textAlign:"center",padding:"40px 0",color:"#2a3555",fontSize:12 }}>無符合條件的股票</div>
+            )}
+          </div>
+        )}
+
+        <div style={{ marginTop:32,textAlign:"center",fontSize:9,color:"#1e2535",letterSpacing:"0.12em" }}>
+          MOATSCAN · 資料來源 yfinance / Yahoo Finance · 僅供研究參考，非投資建議
+        </div>
+      </div>
+
+      {/* Modal */}
+      {selected && (
+        <CompanyModal stock={selected} market={market} onClose={() => setSelected(null)} onMoatUpdate={handleMoatUpdate} />
+      )}
+    </div>
+  );
+}
