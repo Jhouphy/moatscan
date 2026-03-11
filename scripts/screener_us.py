@@ -87,10 +87,21 @@ def score_ticker(ticker_str, retries=2):
                 te = info.get("trailingEps")
                 eps_vals = [te] if te else []
             eps_pass = False
+            eps_g3, eps_g5 = None, None
             if len(eps_vals) >= 2:
                 pos = sum(1 for v in eps_vals if v and v > 0)
                 trend = eps_vals[0] >= eps_vals[-1] * 0.8 if eps_vals[-1] and eps_vals[-1] > 0 else False
                 eps_pass = (pos >= len(eps_vals) * 0.75) and trend
+                def safe_cagr(cur, old, yrs):
+                    try:
+                        if cur and old and old > 0 and cur > 0:
+                            return round((pow(cur / old, 1.0 / yrs) - 1) * 100, 2)
+                    except: pass
+                    return None
+                if len(eps_vals) >= 4:
+                    eps_g3 = safe_cagr(eps_vals[0], eps_vals[3], 3)
+                if len(eps_vals) >= 6:
+                    eps_g5 = safe_cagr(eps_vals[0], eps_vals[5], 5)
             scores["eps"]   = 1 if eps_pass else 0
             details["eps"]  = f"最新EPS ${round(eps_vals[0],2) if eps_vals else 'N/A'}"
 
@@ -159,6 +170,11 @@ def score_ticker(ticker_str, retries=2):
                 "total_score": fin_score,
                 "scores":      scores,
                 "details":     details,
+                "eps_current": round(eps_vals[0], 2) if eps_vals else None,
+                "eps_g3":      eps_g3,
+                "eps_g5":      eps_g5,
+                "div_rate":    round(div_rate, 2) if div_rate else None,
+                "bvps":        round(info.get("bookValuePerShare", 0), 2) if info.get("bookValuePerShare") else None,
                 "updated":     datetime.now().strftime("%Y-%m-%d"),
             }
 
