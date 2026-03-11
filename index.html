@@ -98,9 +98,13 @@ function calcFairValue(type, inputs, stock) {
   const g10 = parseFloat(inputs.g10) / 100 || 0;
 
   if (type === "growth") {
-    const fv3  = g3  > 0 ? eps * Math.pow(1+g3,  3)  * 15 : null;
-    const fv5  = g5  > 0 ? eps * Math.pow(1+g5,  5)  * 15 : null;
-    const fv10 = g10 > 0 ? eps * Math.pow(1+g10, 10) * 15 : null;
+    // 公式：EPS × 成長率%（成長率直接作為合理PE倍數，PEG概念）
+    const r3  = parseFloat(inputs.g3)  || 0;
+    const r5  = parseFloat(inputs.g5)  || 0;
+    const r10 = parseFloat(inputs.g10) || 0;
+    const fv3  = r3  > 0 ? eps * r3  : null;
+    const fv5  = r5  > 0 ? eps * r5  : null;
+    const fv10 = r10 > 0 ? eps * r10 : null;
     return { fv3, fv5, fv10 };
   }
   if (type === "dividend") {
@@ -150,18 +154,23 @@ function SectorHeatmap({ data }) {
 
 // ── 合理價計算區塊 ────────────────────────────────────────────────────────
 function FairValueCalc({ stock }) {
-  // 自動解析 EPS（從 details 字串取數字）
+  // 自動帶入：優先用 JSON 新欄位，fallback 解析 details 字串
   const autoEps = useMemo(()=>{
+    if (stock.eps_current) return String(stock.eps_current);
     const raw = stock.details?.eps || "";
-    const m = raw.match(/[\$\$]?([\d.]+)/);
+    const m = raw.match(/[\$]?([\d.]+)/);
     return m ? m[1] : "";
   },[stock]);
-  // 自動帶入現有財務數值
-  const autoDivRate = stock.dividendRate ? String(stock.dividendRate) : "";
-  const autoBvps    = stock.bookValuePerShare ? String(stock.bookValuePerShare) : "";
 
   const [type, setType] = useState(null);
-  const [inputs, setInputs] = useState({ eps: autoEps, div: autoDivRate, bvps: autoBvps });
+  const [inputs, setInputs] = useState({
+    eps:  autoEps,
+    g3:   stock.eps_g3  != null ? String(stock.eps_g3)  : "",
+    g5:   stock.eps_g5  != null ? String(stock.eps_g5)  : "",
+    g10:  "",   // 永遠手動
+    div:  stock.div_rate != null ? String(stock.div_rate) : "",
+    bvps: stock.bvps    != null ? String(stock.bvps)    : "",
+  });
   const setI = (k,v) => setInputs(p=>({...p,[k]:v}));
 
   const result = type ? calcFairValue(type, inputs, stock) : null;
@@ -216,23 +225,38 @@ function FairValueCalc({ stock }) {
               {inputs.eps&&<div style={{fontSize:10,color:"#f0b90b",marginTop:3}}>✓ 自動帶入，可手動修改</div>}
             </div>
             <div style={{fontSize:11,color:"#4a6080",padding:"6px 0",lineHeight:1.8}}>
-                EPS without NRI 成長率<br/>請至
-                <a href={sbUrl} target="_blank" rel="noopener noreferrer"
-                  style={{color:"#4a8aff",marginLeft:4,textDecoration:"underline"}}>
-                  stockboss.io ↗
-                </a><br/>
-                <span style={{color:"#3a4a6a",fontSize:10}}>頁面底部「成長率%」表格</span>
-              </div>
+              10年成長率請至
+              <a href={sbUrl} target="_blank" rel="noopener noreferrer"
+                style={{color:"#4a8aff",marginLeft:4,textDecoration:"underline"}}>
+                stockboss.io ↗
+              </a><br/>
+              <span style={{color:"#3a4a6a",fontSize:10}}>查詢「EPS without NRI」成長率欄</span>
+            </div>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
-            {[["g3","3年成長率 %"],["g5","5年成長率 %"],["g10","10年成長率 %"]].map(([k,lb])=>(
+            {[
+              ["g3",  "3年成長率 %",  stock.eps_g3  != null],
+              ["g5",  "5年成長率 %",  stock.eps_g5  != null],
+              ["g10", "10年成長率 %", false],
+            ].map(([k,lb,isAuto])=>(
               <div key={k}>
-                <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>{lb}</div>
-                <input type="number" value={inputs[k]||""} onChange={e=>setI(k,e.target.value)} placeholder="例：11.7"
-                  style={{width:"100%",background:"#0d1120",border:"1px solid #1e2840",borderRadius:6,padding:"8px 10px",color:"#e8f0ff",fontSize:14}} />
+                <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5,display:"flex",alignItems:"center",gap:5}}>
+                  {lb}
+                  <span style={{fontSize:10,padding:"1px 5px",borderRadius:3,
+                    background:isAuto?"#f0b90b20":"#1e284040",
+                    color:isAuto?"#f0b90b":"#4a5a7a"}}>
+                    {isAuto?"自動":"手動"}
+                  </span>
+                </div>
+                <input type="number" value={inputs[k]} onChange={e=>setI(k,e.target.value)}
+                  placeholder={k==="g10"?"查 stockboss":""}
+                  style={{width:"100%",background:"#0d1120",
+                    border:`1px solid ${inputs[k]?(isAuto?"#f0b90b55":"#4a8aff55"):"#1e2840"}`,
+                    borderRadius:6,padding:"8px 10px",color:"#e8f0ff",fontSize:14}} />
               </div>
             ))}
           </div>
+          <div style={{fontSize:11,color:"#4a5a7a",marginBottom:10}}>公式：EPS × 成長率%（PEG概念）</div>
           {result && (
             <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
               <PriceTag label="3年合理價" fv={result.fv3} />
