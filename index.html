@@ -166,7 +166,9 @@ function FairValueCalc({ stock }) {
 
   const result = type ? calcFairValue(type, inputs, stock) : null;
   const price = stock.price || 0;
-  const sbUrl = `https://www.stockboss.io/stock/${stock.ticker.replace(".TW","").replace(".TWO","")}#growth`;
+  const sbUrl = stock.ticker.includes(".TW") || stock.ticker.includes(".TWO")
+    ? `https://www.stockboss.io/symbol/TPE:${stock.ticker.replace(".TW","").replace(".TWO","")}`
+    : `https://www.stockboss.io/symbol/${stock.ticker}`;
 
   const PriceTag = ({label, fv}) => {
     if(!fv)return null;
