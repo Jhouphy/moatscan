@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MoatScan 選股系統</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Barlow+Condensed:wght@600;700;900&family=DM+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #080c18; color: #e8f0ff; font-family: 'Noto Sans TC', sans-serif; font-size: 15px; }
+  input, select { outline: none; font-family: 'Noto Sans TC', sans-serif; }
+  button { cursor: pointer; font-family: 'Noto Sans TC', sans-serif; }
+  ::placeholder { color: #3a4a6a; }
+  select option { background: #0d1120; color: #e8f0ff; }
+  ::-webkit-scrollbar { width: 5px; }
+  ::-webkit-scrollbar-track { background: #0a0e1a; }
+  ::-webkit-scrollbar-thumb { background: #2a3555; border-radius: 3px; }
+  @keyframes fadeUp { from { opacity:0; transform:translateY(14px); } to { opacity:1; transform:translateY(0); } }
+  .fade { animation: fadeUp 0.4s ease; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .spin { animation: spin 1s linear infinite; }
+  .stock-row { transition: all 0.2s; }
+  .stock-row:hover { transform: translateX(3px); }
+  .moat-btn { transition: all 0.2s; }
+  .moat-btn:hover { opacity: 0.85; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+// ── 填入你的 GitHub 帳號 ───────────────────────────────────────────────────
+const DATA_URLS = {
+  TW: "https://raw.githubusercontent.com/Jhouphy/moatscan/main/data/tw_results.json",
+  US: "https://raw.githubusercontent.com/Jhouphy/moatscan/main/data/us_results.json",
+};
+
+const DEMO_DATA = {
+  TW: {
+    updated: "2026-03-11 15:00", market: "TW", total: 5, failed: 0,
+    results: [
+      { ticker:"2330.TW", name:"台積電", sector:"Technology", industry:"Semiconductors", market_cap:18000000000000, price:910, summary:"台灣積體電路製造股份有限公司是全球最大的專業積體電路製造服務企業，提供邏輯積體電路製造服務。", fin_score:6, moat_score:0, scores:{eps:1,fcf:1,roic:1,de:1,netmargin:1,dividend:1}, details:{eps:"最新EPS $42.3",fcf:"4/4年FCF為正",roic:"最新ROIC 28.5%",de:"D/E=0.21",netmargin:"Net Margin 38.9%",dividend:"近4年有配息"} },
+      { ticker:"2454.TW", name:"聯發科", sector:"Technology", industry:"Semiconductors", market_cap:1800000000000, price:1150, summary:"聯發科技股份有限公司設計各種半導體系統晶片，廣泛應用於行動通訊、家用多媒體等領域。", fin_score:5, moat_score:0, scores:{eps:1,fcf:1,roic:1,de:1,netmargin:1,dividend:0}, details:{eps:"最新EPS $85.2",fcf:"4/4年FCF為正",roic:"最新ROIC 22.1%",de:"D/E=0.12",netmargin:"Net Margin 22.3%",dividend:"近1年有配息"} },
+      { ticker:"2412.TW", name:"中華電信", sector:"Communication", industry:"Telecom", market_cap:800000000000, price:117, summary:"中華電信股份有限公司為台灣最大電信業者，提供固網、行動通信及寬頻網路服務。", fin_score:5, moat_score:0, scores:{eps:1,fcf:1,roic:0,de:1,netmargin:1,dividend:1}, details:{eps:"最新EPS $4.82",fcf:"4/4年FCF為正",roic:"最新ROIC 8.2%",de:"D/E=0.38",netmargin:"Net Margin 21.4%",dividend:"近4年有配息"} },
+      { ticker:"6505.TW", name:"台塑化", sector:"Energy", industry:"Oil & Gas", market_cap:600000000000, price:87, summary:"台灣中油股份有限公司關係企業，主要從事石油化工原料之製造及銷售。", fin_score:4, moat_score:0, scores:{eps:1,fcf:0,roic:1,de:1,netmargin:1,dividend:0}, details:{eps:"最新EPS $3.1",fcf:"2/4年FCF為正",roic:"最新ROIC 11.2%",de:"D/E=0.31",netmargin:"Net Margin 20.8%",dividend:"近2年有配息"} },
+      { ticker:"1301.TW", name:"台塑", sector:"Basic Materials", industry:"Chemicals", market_cap:500000000000, price:72, summary:"台灣塑膠工業股份有限公司從事聚氯乙烯、塑膠加工品及化學品之製造銷售。", fin_score:4, moat_score:0, scores:{eps:1,fcf:1,roic:0,de:1,netmargin:0,dividend:1}, details:{eps:"最新EPS $2.8",fcf:"3/4年FCF為正",roic:"最新ROIC 7.8%",de:"D/E=0.45",netmargin:"Net Margin 16.2%",dividend:"近4年有配息"} },
+    ]
+  },
+  US: {
+    updated: "2026-03-11 22:00", market: "US", total: 4, failed: 0,
+    results: [
+      { ticker:"AAPL", name:"Apple Inc.", sector:"Technology", industry:"Consumer Electronics", market_cap:3200000000000, price:212, summary:"Apple Inc. designs, manufactures, and markets smartphones, personal computers, tablets, wearables, and accessories worldwide.", fin_score:6, moat_score:0, scores:{eps:1,fcf:1,roic:1,de:0,netmargin:1,dividend:1}, details:{eps:"最新EPS $6.13",fcf:"4/4年FCF為正",roic:"ROIC 54.2%",de:"D/E=1.87",netmargin:"Net Margin 25.3%",dividend:"近4年有配息"} },
+      { ticker:"MSFT", name:"Microsoft Corp.", sector:"Technology", industry:"Software", market_cap:2900000000000, price:389, summary:"Microsoft Corporation develops and supports software, services, devices and solutions worldwide.", fin_score:6, moat_score:0, scores:{eps:1,fcf:1,roic:1,de:1,netmargin:1,dividend:1}, details:{eps:"最新EPS $11.45",fcf:"4/4年FCF為正",roic:"ROIC 28.9%",de:"D/E=0.38",netmargin:"Net Margin 35.6%",dividend:"近4年有配息"} },
+      { ticker:"V", name:"Visa Inc.", sector:"Financial Services", industry:"Credit Services", market_cap:580000000000, price:278, summary:"Visa Inc. operates as a payments technology company worldwide.", fin_score:5, moat_score:0, scores:{eps:1,fcf:1,roic:1,de:1,netmargin:1,dividend:0}, details:{eps:"最新EPS $9.37",fcf:"4/4年FCF為正",roic:"ROIC 32.1%",de:"D/E=0.41",netmargin:"Net Margin 51.2%",dividend:"近3年有配息"} },
+      { ticker:"KO", name:"Coca-Cola Co.", sector:"Consumer Defensive", industry:"Beverages", market_cap:260000000000, price:60, summary:"The Coca-Cola Company manufactures, markets, and sells various nonalcoholic beverages worldwide.", fin_score:4, moat_score:0, scores:{eps:1,fcf:1,roic:0,de:0,netmargin:1,dividend:1}, details:{eps:"最新EPS $2.47",fcf:"4/4年FCF為正",roic:"ROIC 11.8%",de:"D/E=2.14",netmargin:"Net Margin 22.6%",dividend:"近4年有配息"} },
+    ]
+  }
+};
+
+const MOAT_TYPES = [
+  { id:"brand",     label:"品牌",    icon:"™" },
+  { id:"patent",    label:"專利",    icon:"⚗" },
+  { id:"license",   label:"特許",    icon:"📜" },
+  { id:"switching", label:"轉換成本", icon:"🔒" },
+  { id:"network",   label:"網絡效應", icon:"🌐" },
+  { id:"cost",      label:"成本優勢", icon:"⚙" },
+  { id:"scale",     label:"規模優勢", icon:"📊" },
+];
+
+const METRIC_LABELS = { eps:"EPS", fcf:"FCF", roic:"ROIC", de:"D/E", netmargin:"Net Margin", dividend:"配息" };
+
+const FC  = s => s===6?"#00c853":s===5?"#ffd600":s===4?"#ff6d00":"#ff4757";
+const FB  = s => s===6?"#00c85320":s===5?"#ffd60020":s===4?"#ff6d0020":"#ff475720";
+const TC  = s => s>=7?"#00c853":s>=5?"#ffd600":"#ff4757";
+
+const fmtCap = (v, mkt) => {
+  if (!v) return "N/A";
+  if (mkt==="TW") return (v/1e8).toFixed(0)+" 億";
+  const b = v/1e9;
+  return b>=1000?(v/1e12).toFixed(1)+"T USD":b.toFixed(0)+"B USD";
+};
+
+// ── 板塊熱圖 ──────────────────────────────────────────────────────────────
+function SectorHeatmap({ data }) {
+  const sectors = useMemo(() => {
+    const map = {};
+    (data||[]).forEach(r => {
+      const s = r.sector||"其他";
+      if (!map[s]) map[s]={name:s,count:0,avg:0,high:0};
+      map[s].count++;
+      map[s].avg += r.fin_score;
+      if (r.fin_score>=5) map[s].high++;
+    });
+    return Object.values(map).map(s=>({...s,avg:s.avg/s.count})).sort((a,b)=>b.high-a.high);
+  }, [data]);
+
+  const maxH = Math.max(...sectors.map(s=>s.high),1);
+
+  return (
+    <div style={{marginBottom:24}}>
+      <div style={{fontSize:13,color:"#8899bb",letterSpacing:"0.1em",marginBottom:12,fontWeight:500}}>▸ 板塊分佈（財務5–6分股票數量）</div>
+      <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
+        {sectors.map(s=>{
+          const bg = s.high>=3?`rgba(0,200,83,${0.08+s.high/maxH*0.18})`:s.high>=1?"rgba(255,214,0,0.08)":"#0d1120";
+          const bc = s.high>=3?"#00c85340":s.high>=1?"#ffd60030":"#1e2a40";
+          return (
+            <div key={s.name} style={{background:bg,border:`1px solid ${bc}`,borderRadius:10,padding:"10px 14px",minWidth:110}}>
+              <div style={{fontSize:13,color:"#aabbd4",marginBottom:4,fontWeight:500}}>{s.name}</div>
+              <div style={{fontSize:18,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:800}}>
+                <span style={{color:s.high>=3?"#00c853":s.high>=1?"#ffd600":"#3a4a6a"}}>{s.high}</span>
+                <span style={{color:"#2a3555",fontSize:14}}> / {s.count}</span>
+              </div>
+              <div style={{fontSize:11,color:"#4a5a7a",marginTop:2}}>平均 {s.avg.toFixed(1)}/6</div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── 公司詳情彈窗 ──────────────────────────────────────────────────────────
+function CompanyModal({ stock, market, onClose, onMoatUpdate }) {
+  const [moats, setMoats] = useState([]);
+  const [moatScore, setMoatScore] = useState(stock.moat_score||0);
+  const [translating, setTranslating] = useState(false);
+  const [translated, setTranslated] = useState("");
+
+  const toggleMoat = id => {
+    const next = moats.includes(id)?moats.filter(m=>m!==id):[...moats,id];
+    setMoats(next);
+    setMoatScore(next.length===0?0:next.length===1?1:next.length<=3?2:3);
+  };
+
+  const translate = async () => {
+    if (!stock.summary) return;
+    setTranslating(true);
+    try {
+      const r = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&q=${encodeURIComponent(stock.summary)}`);
+      const d = await r.json();
+      setTranslated(d[0].map(s=>s[0]).join(""));
+    } catch { setTranslated("翻譯失敗，請稍後再試"); }
+    finally { setTranslating(false); }
+  };
+
+  const total = (stock.fin_score||0) + moatScore;
+  const moatColors = ["#ff4757","#ff6d00","#ffd600","#00c853"];
+  const moatLabels = ["無護城河","弱","中等","強"];
+
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#0d1120",border:"1px solid #2a3a58",borderRadius:16,width:"100%",maxWidth:600,maxHeight:"90vh",overflowY:"auto",padding:28}}>
+
+        {/* Header */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:22}}>
+          <div>
+            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6}}>
+              <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:30,color:"#ffffff"}}>{stock.ticker.replace(".TW","").replace(".TWO","")}</span>
+              <span style={{background:"#1a2540",padding:"3px 10px",borderRadius:5,fontSize:12,color:"#6a8ab8"}}>{market}</span>
+            </div>
+            <div style={{color:"#c8d8f0",fontSize:16,fontWeight:500,marginBottom:8}}>{stock.name}</div>
+            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+              <span style={{background:"#1a1a00",border:"1px solid #f0b90b44",borderRadius:5,padding:"3px 10px",fontSize:12,color:"#f0b90b"}}>{stock.sector}</span>
+              <span style={{background:"#0d1628",border:"1px solid #2a3a58",borderRadius:5,padding:"3px 10px",fontSize:12,color:"#6a8ab8"}}>{stock.industry}</span>
+            </div>
+          </div>
+          <div style={{textAlign:"right"}}>
+            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:44,color:TC(total),lineHeight:1}}>{total}</div>
+            <div style={{fontSize:13,color:"#4a5a7a"}}>/9 總分</div>
+            <div style={{fontSize:13,fontWeight:600,color:total>=7?"#00c853":"#ff4757",marginTop:4}}>{total>=7?"✦ 達標":"✗ 未達標"}</div>
+          </div>
+        </div>
+
+        {/* Financial Scores */}
+        <div style={{background:"#080c18",borderRadius:10,padding:16,marginBottom:16}}>
+          <div style={{fontSize:14,color:"#8899bb",fontWeight:500,marginBottom:12}}>財務指標　{stock.fin_score}/6 分</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+            {Object.entries(stock.scores||{}).map(([k,v])=>(
+              <div key={k} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",background:"#0d1120",borderRadius:8,border:`1px solid ${v?"#00c85330":"#1e2840"}`}}>
+                <div style={{width:22,height:22,borderRadius:5,background:v?"#00c85322":"#ff475722",border:`1.5px solid ${v?"#00c853":"#ff4757"}`,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                  <span style={{color:v?"#00c853":"#ff4757",fontSize:13,fontWeight:700}}>{v?"✓":"✗"}</span>
+                </div>
+                <div>
+                  <div style={{fontSize:13,color:"#c8d8f0",fontWeight:500}}>{METRIC_LABELS[k]}</div>
+                  <div style={{fontSize:11,color:"#5a6a8a",marginTop:1}}>{stock.details?.[k]}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Moat Scoring */}
+        <div style={{background:"#080c18",borderRadius:10,padding:16,marginBottom:16}}>
+          <div style={{fontSize:14,color:"#8899bb",fontWeight:500,marginBottom:12}}>護城河評分（手動）</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:14}}>
+            {MOAT_TYPES.map(m=>(
+              <button key={m.id} className="moat-btn" onClick={()=>toggleMoat(m.id)}
+                style={{background:moats.includes(m.id)?"#f0b90b18":"transparent",border:`1.5px solid ${moats.includes(m.id)?"#f0b90b":"#2a3a58"}`,borderRadius:8,padding:"7px 13px",color:moats.includes(m.id)?"#f0b90b":"#6a8ab8",fontSize:13,fontWeight:500}}>
+                {m.icon} {m.label}
+              </button>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            {[0,1,2,3].map(v=>(
+              <button key={v} onClick={()=>setMoatScore(v)}
+                style={{flex:1,padding:"12px 0",background:moatScore===v?moatColors[v]+"25":"#0d1120",border:`2px solid ${moatScore===v?moatColors[v]:"#1e2840"}`,borderRadius:8,color:moatScore===v?moatColors[v]:"#4a5a7a",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:22,cursor:"pointer",transition:"all 0.2s"}}>
+                {v}
+                <div style={{fontSize:11,fontFamily:"'Noto Sans TC',sans-serif",fontWeight:400,marginTop:2,color:moatScore===v?moatColors[v]+"cc":"#3a4a6a"}}>{moatLabels[v]}</div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Summary */}
+        {stock.summary && (
+          <div style={{background:"#080c18",borderRadius:10,padding:16,marginBottom:20}}>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+              <div style={{fontSize:14,color:"#8899bb",fontWeight:500}}>業務簡介</div>
+              {market==="US" && !translated && (
+                <button onClick={translate} disabled={translating}
+                  style={{background:"none",border:"1px solid #2a3a58",borderRadius:5,padding:"4px 10px",color:translating?"#3a4a6a":"#4a8aff",fontSize:12,cursor:"pointer"}}>
+                  {translating?"翻譯中...":"🌐 中文翻譯"}
+                </button>
+              )}
+            </div>
+            <div style={{fontSize:13,color:"#c0d0e8",lineHeight:1.9}}>{translated||stock.summary}</div>
+          </div>
+        )}
+
+        <div style={{display:"flex",gap:10}}>
+          <button onClick={()=>{onMoatUpdate(stock.ticker,moatScore,moats);onClose();}}
+            style={{flex:1,padding:"13px 0",background:"linear-gradient(135deg,#f0b90b,#d4941a)",border:"none",borderRadius:8,color:"#080c18",fontWeight:700,fontSize:15,cursor:"pointer"}}>
+            儲存護城河評分
+          </button>
+          <button onClick={onClose}
+            style={{padding:"13px 22px",background:"none",border:"1px solid #2a3a58",borderRadius:8,color:"#6a8ab8",fontSize:14,cursor:"pointer"}}>
+            關閉
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── 股票列表卡片 ──────────────────────────────────────────────────────────
+function StockRow({ stock, market, onSelect }) {
+  const total = (stock.fin_score||0)+(stock.moat_score||0);
+  return (
+    <div className="stock-row" onClick={()=>onSelect(stock)}
+      style={{background:"#0d1120",border:`1px solid ${FC(stock.fin_score)}30`,borderRadius:12,padding:"14px 18px",display:"flex",alignItems:"center",gap:14,cursor:"pointer",marginBottom:10}}>
+
+      {/* Score Badge */}
+      <div style={{width:54,height:54,borderRadius:11,background:FB(stock.fin_score),border:`2px solid ${FC(stock.fin_score)}66`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:24,color:FC(stock.fin_score),lineHeight:1}}>{stock.fin_score}</div>
+        <div style={{fontSize:10,color:"#4a5a7a",marginTop:1}}>/ 6</div>
+      </div>
+
+      {/* Info */}
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:5}}>
+          <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:800,fontSize:19,color:"#ffffff"}}>{stock.ticker.replace(".TW","").replace(".TWO","")}</span>
+          <span style={{fontSize:14,color:"#c0d0e8",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{stock.name}</span>
+        </div>
+        <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:7}}>
+          <span style={{fontSize:12,color:"#f0b90b",background:"#f0b90b15",padding:"2px 8px",borderRadius:4,fontWeight:500}}>{stock.sector}</span>
+          <span style={{fontSize:12,color:"#5a7a9a"}}>{fmtCap(stock.market_cap,market)}</span>
+          {stock.price>0 && <span style={{fontSize:12,color:"#5a7a9a"}}>${stock.price}</span>}
+        </div>
+        {/* Mini bar */}
+        <div style={{display:"flex",gap:3}}>
+          {Object.entries(stock.scores||{}).map(([k,v])=>(
+            <div key={k} title={METRIC_LABELS[k]} style={{flex:1,height:4,borderRadius:2,background:v?FC(stock.fin_score):"#1e2840"}} />
+          ))}
+        </div>
+      </div>
+
+      {/* Right */}
+      <div style={{textAlign:"right",flexShrink:0}}>
+        {stock.moat_score>0 && <div style={{fontSize:12,color:"#f0b90b",marginBottom:3}}>護城河 +{stock.moat_score}</div>}
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:16,color:total>=7?"#00c853":"#4a5a7a"}}>
+          {total>=7?`${total} ✦`:`總 ${total}`}
+        </div>
+        <div style={{fontSize:11,color:"#3a4a6a",marginTop:2}}>點擊評護城河</div>
+      </div>
+    </div>
+  );
+}
+
+// ── 主 App ────────────────────────────────────────────────────────────────
+function App() {
+  const [market, setMarket]       = useState("TW");
+  const [data, setData]           = useState(null);
+  const [loading, setLoading]     = useState(false);
+  const [error, setError]         = useState("");
+  const [useDemo, setUseDemo]     = useState(false);
+  const [selected, setSelected]   = useState(null);
+  const [moatMap, setMoatMap]     = useState({});
+  const [filterMin, setFilterMin] = useState(4);
+  const [sortBy, setSortBy]       = useState("fin_score");
+  const [search, setSearch]       = useState("");
+  const [sectorFilter, setSectorFilter] = useState("全部");
+
+  const load = async (mkt, demo) => {
+    setLoading(true); setError(""); setData(null);
+    if (demo) { await new Promise(r=>setTimeout(r,500)); setData(DEMO_DATA[mkt]); setLoading(false); return; }
+    try {
+      const res = await fetch(DATA_URLS[mkt]+"?t="+Date.now());
+      if (!res.ok) throw new Error("HTTP "+res.status);
+      setData(await res.json());
+    } catch(e) { setError(e.message); } finally { setLoading(false); }
+  };
+
+  useEffect(()=>{ load(market, useDemo); }, [market, useDemo]);
+
+  const enriched = useMemo(()=>(data?.results||[]).map(r=>({
+    ...r,
+    moat_score:  moatMap[r.ticker]?.score ?? r.moat_score ?? 0,
+    total_score: r.fin_score + (moatMap[r.ticker]?.score ?? r.moat_score ?? 0),
+  })), [data, moatMap]);
+
+  const sectors = useMemo(()=>["全部",...new Set(enriched.map(r=>r.sector).filter(Boolean))],[enriched]);
+
+  const filtered = useMemo(()=>{
+    let list = enriched.filter(r=>r.fin_score>=filterMin);
+    if (sectorFilter!=="全部") list = list.filter(r=>r.sector===sectorFilter);
+    if (search) list = list.filter(r=>r.ticker.toLowerCase().includes(search.toLowerCase())||r.name?.toLowerCase().includes(search.toLowerCase()));
+    return [...list].sort((a,b)=>b[sortBy]-a[sortBy]);
+  }, [enriched, filterMin, sectorFilter, search, sortBy]);
+
+  const qualified = filtered.filter(r=>r.total_score>=7);
+
+  const onMoatUpdate = (ticker, score, types) => setMoatMap(p=>({...p,[ticker]:{score,types}}));
+
+  const statItems = [
+    { label:"掃描總數", val:data?.total||0, color:"#e8f0ff" },
+    { label:"財務4分↑", val:enriched.filter(r=>r.fin_score>=4).length, color:"#ff8c42" },
+    { label:"財務5分↑", val:enriched.filter(r=>r.fin_score>=5).length, color:"#ffd600" },
+    { label:"財務6分",  val:enriched.filter(r=>r.fin_score===6).length, color:"#00c853" },
+    { label:"達標(≥7)", val:qualified.length, color:"#00c853" },
+  ];
+
+  return (
+    <div style={{minHeight:"100vh",background:"#080c18"}}>
+
+      {/* Header */}
+      <div style={{borderBottom:"1px solid #1a2540",background:"#0a0e1c",padding:"0 20px",display:"flex",alignItems:"center",justifyContent:"space-between",height:56,flexWrap:"wrap",gap:8,position:"sticky",top:0,zIndex:50}}>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          <div style={{width:30,height:30,background:"linear-gradient(135deg,#f0b90b,#d4941a)",borderRadius:7,display:"flex",alignItems:"center",justifyContent:"center"}}>
+            <span style={{color:"#080c18",fontSize:15,fontWeight:700}}>⬡</span>
+          </div>
+          <div>
+            <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:20,letterSpacing:"0.12em",color:"#ffffff"}}>
+              MOAT<span style={{color:"#f0b90b"}}>SCAN</span>
+            </span>
+            <span style={{fontSize:12,color:"#4a5a7a",marginLeft:10}}>全市場選股篩選</span>
+          </div>
+        </div>
+        <div style={{display:"flex",gap:10,alignItems:"center"}}>
+          <label style={{fontSize:13,color:"#6a8ab8",display:"flex",alignItems:"center",gap:6,cursor:"pointer"}}>
+            <input type="checkbox" checked={useDemo} onChange={e=>setUseDemo(e.target.checked)} style={{accentColor:"#f0b90b",width:14,height:14}} />
+            示範資料
+          </label>
+          {["TW","US"].map(m=>(
+            <button key={m} onClick={()=>setMarket(m)}
+              style={{padding:"7px 18px",background:market===m?"linear-gradient(135deg,#f0b90b,#d4941a)":"none",border:`1px solid ${market===m?"transparent":"#2a3a58"}`,borderRadius:7,color:market===m?"#080c18":"#6a8ab8",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:15,letterSpacing:"0.05em",transition:"all 0.2s"}}>
+              {m==="TW"?"🇹🇼 台股":"🇺🇸 美股"}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{maxWidth:960,margin:"0 auto",padding:"24px 16px"}}>
+
+        {/* Stats */}
+        {data && (
+          <div style={{display:"flex",gap:10,marginBottom:20,flexWrap:"wrap"}}>
+            {statItems.map(item=>(
+              <div key={item.label} style={{background:"#0d1120",border:"1px solid #1e2a40",borderRadius:10,padding:"10px 18px",textAlign:"center",flex:"1 0 auto"}}>
+                <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:26,color:item.color}}>{item.val}</div>
+                <div style={{fontSize:12,color:"#6a8ab8",marginTop:2}}>{item.label}</div>
+              </div>
+            ))}
+            <div style={{fontSize:12,color:"#3a4a6a",alignSelf:"center",marginLeft:"auto"}}>更新：{data.updated}</div>
+          </div>
+        )}
+
+        {/* Heatmap */}
+        {data && <SectorHeatmap data={enriched} />}
+
+        {/* Filters */}
+        <div style={{display:"flex",gap:8,marginBottom:18,flexWrap:"wrap"}}>
+          <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="🔍 搜尋股票代號或公司名稱"
+            style={{flex:"1 1 200px",background:"#0d1120",border:"1px solid #1e2a40",borderRadius:8,padding:"10px 14px",color:"#e8f0ff",fontSize:14}} />
+          <select value={sectorFilter} onChange={e=>setSectorFilter(e.target.value)}
+            style={{background:"#0d1120",border:"1px solid #1e2a40",borderRadius:8,padding:"10px 14px",color:"#e8f0ff",fontSize:14,minWidth:140}}>
+            {sectors.map(s=><option key={s}>{s}</option>)}
+          </select>
+          <select value={filterMin} onChange={e=>setFilterMin(Number(e.target.value))}
+            style={{background:"#0d1120",border:"1px solid #1e2a40",borderRadius:8,padding:"10px 14px",color:"#e8f0ff",fontSize:14}}>
+            <option value={4}>財務 ≥ 4分</option>
+            <option value={5}>財務 ≥ 5分</option>
+            <option value={6}>財務 = 6分</option>
+          </select>
+          <select value={sortBy} onChange={e=>setSortBy(e.target.value)}
+            style={{background:"#0d1120",border:"1px solid #1e2a40",borderRadius:8,padding:"10px 14px",color:"#e8f0ff",fontSize:14}}>
+            <option value="fin_score">財務分數排序</option>
+            <option value="total_score">總分排序</option>
+            <option value="market_cap">市值排序</option>
+          </select>
+        </div>
+
+        {/* Loading */}
+        {loading && (
+          <div style={{textAlign:"center",padding:"70px 0",color:"#4a5a7a"}}>
+            <div className="spin" style={{width:36,height:36,border:"3px solid #1e2840",borderTopColor:"#f0b90b",borderRadius:"50%",margin:"0 auto 16px"}} />
+            <div style={{fontSize:14}}>載入資料中，請稍候...</div>
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <div style={{background:"#ff475714",border:"1px solid #ff475740",borderRadius:10,padding:18,color:"#ff7070",fontSize:14,marginBottom:16,lineHeight:1.8}}>
+            ⚠ 資料載入失敗：{error}<br/>
+            <span style={{fontSize:12,color:"#ff475780"}}>請先勾選「示範資料」體驗功能，或等 GitHub Actions 跑完後再試</span>
+          </div>
+        )}
+
+        {/* Stock List */}
+        {!loading && data && (
+          <div className="fade">
+            <div style={{fontSize:13,color:"#5a7a9a",marginBottom:14}}>
+              顯示 <span style={{color:"#e8f0ff",fontWeight:600}}>{filtered.length}</span> 支｜點擊任一股票可手動評分護城河
+            </div>
+            {filtered.map(stock=>(
+              <StockRow key={stock.ticker} stock={stock} market={market} onSelect={setSelected} />
+            ))}
+            {filtered.length===0 && (
+              <div style={{textAlign:"center",padding:"50px 0",color:"#3a4a6a",fontSize:14}}>無符合條件的股票</div>
+            )}
+          </div>
+        )}
+
+        <div style={{marginTop:36,textAlign:"center",fontSize:12,color:"#2a3a58",lineHeight:1.8}}>
+          MOATSCAN · 資料來源：yfinance / Yahoo Finance<br/>僅供研究參考，不構成任何投資建議
+        </div>
+      </div>
+
+      {selected && <CompanyModal stock={selected} market={market} onClose={()=>setSelected(null)} onMoatUpdate={onMoatUpdate} />}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
