@@ -150,12 +150,23 @@ function SectorHeatmap({ data }) {
 
 // ── 合理價計算區塊 ────────────────────────────────────────────────────────
 function FairValueCalc({ stock }) {
+  // 自動解析 EPS（從 details 字串取數字）
+  const autoEps = useMemo(()=>{
+    const raw = stock.details?.eps || "";
+    const m = raw.match(/[\$\$]?([\d.]+)/);
+    return m ? m[1] : "";
+  },[stock]);
+  // 自動帶入現有財務數值
+  const autoDivRate = stock.dividendRate ? String(stock.dividendRate) : "";
+  const autoBvps    = stock.bookValuePerShare ? String(stock.bookValuePerShare) : "";
+
   const [type, setType] = useState(null);
-  const [inputs, setInputs] = useState({});
+  const [inputs, setInputs] = useState({ eps: autoEps, div: autoDivRate, bvps: autoBvps });
   const setI = (k,v) => setInputs(p=>({...p,[k]:v}));
 
   const result = type ? calcFairValue(type, inputs, stock) : null;
   const price = stock.price || 0;
+  const sbUrl = `https://www.stockboss.io/stock/${stock.ticker.replace(".TW","").replace(".TWO","")}#growth`;
 
   const PriceTag = ({label, fv}) => {
     if(!fv)return null;
@@ -198,12 +209,18 @@ function FairValueCalc({ stock }) {
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
             <div>
               <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>當前 EPS（元）</div>
-              <input type="number" value={inputs.eps||""} onChange={e=>setI("eps",e.target.value)} placeholder="例：42.3"
-                style={{width:"100%",background:"#0d1120",border:"1px solid #1e2840",borderRadius:6,padding:"8px 12px",color:"#e8f0ff",fontSize:14}} />
+              <input type="number" value={inputs.eps} onChange={e=>setI("eps",e.target.value)} placeholder="例：42.3"
+                style={{width:"100%",background:"#0d1120",border:`1px solid ${inputs.eps?"#f0b90b55":"#1e2840"}`,borderRadius:6,padding:"8px 12px",color:"#e8f0ff",fontSize:14}} />
+              {inputs.eps&&<div style={{fontSize:10,color:"#f0b90b",marginTop:3}}>✓ 自動帶入，可手動修改</div>}
             </div>
-            <div style={{fontSize:11,color:"#4a6080",padding:"8px 0",lineHeight:1.6}}>
-              從 stockboss.io 查詢<br/>EPS without NRI 成長率
-            </div>
+            <div style={{fontSize:11,color:"#4a6080",padding:"6px 0",lineHeight:1.8}}>
+                EPS without NRI 成長率<br/>請至
+                <a href={sbUrl} target="_blank" rel="noopener noreferrer"
+                  style={{color:"#4a8aff",marginLeft:4,textDecoration:"underline"}}>
+                  stockboss.io ↗
+                </a><br/>
+                <span style={{color:"#3a4a6a",fontSize:10}}>頁面底部「成長率%」表格</span>
+              </div>
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
             {[["g3","3年成長率 %"],["g5","5年成長率 %"],["g10","10年成長率 %"]].map(([k,lb])=>(
@@ -227,10 +244,11 @@ function FairValueCalc({ stock }) {
       {/* 股息股輸入 */}
       {type==="dividend" && (
         <div>
-          <div style={{maxWidth:240,marginBottom:12}}>
+          <div style={{maxWidth:260,marginBottom:12}}>
             <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>年度股息（元/股）</div>
-            <input type="number" value={inputs.div||""} onChange={e=>setI("div",e.target.value)} placeholder="例：3.5"
-              style={{width:"100%",background:"#0d1120",border:"1px solid #1e2840",borderRadius:6,padding:"8px 12px",color:"#e8f0ff",fontSize:14}} />
+            <input type="number" value={inputs.div} onChange={e=>setI("div",e.target.value)} placeholder="例：3.5"
+              style={{width:"100%",background:"#0d1120",border:`1px solid ${inputs.div?"#f0b90b55":"#1e2840"}`,borderRadius:6,padding:"8px 12px",color:"#e8f0ff",fontSize:14}} />
+            {inputs.div?<div style={{fontSize:10,color:"#f0b90b",marginTop:3}}>✓ 自動帶入，可手動修改</div>:<div style={{fontSize:10,color:"#4a5a7a",marginTop:3}}>請手動輸入年度股息</div>}
             <div style={{fontSize:11,color:"#4a5a7a",marginTop:5}}>公式：年股息 × 25（以4%殖利率估算）</div>
           </div>
           {result?.fv && <PriceTag label="股息股合理價" fv={result.fv} />}
@@ -240,10 +258,11 @@ function FairValueCalc({ stock }) {
       {/* 資產股輸入 */}
       {type==="asset" && (
         <div>
-          <div style={{maxWidth:240,marginBottom:12}}>
+          <div style={{maxWidth:260,marginBottom:12}}>
             <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>每股淨值 Book Value Per Share（元）</div>
-            <input type="number" value={inputs.bvps||""} onChange={e=>setI("bvps",e.target.value)} placeholder="例：120.5"
-              style={{width:"100%",background:"#0d1120",border:"1px solid #1e2840",borderRadius:6,padding:"8px 12px",color:"#e8f0ff",fontSize:14}} />
+            <input type="number" value={inputs.bvps} onChange={e=>setI("bvps",e.target.value)} placeholder="例：120.5"
+              style={{width:"100%",background:"#0d1120",border:`1px solid ${inputs.bvps?"#f0b90b55":"#1e2840"}`,borderRadius:6,padding:"8px 12px",color:"#e8f0ff",fontSize:14}} />
+            {inputs.bvps?<div style={{fontSize:10,color:"#f0b90b",marginTop:3}}>✓ 自動帶入，可手動修改</div>:<div style={{fontSize:10,color:"#4a5a7a",marginTop:3}}>請手動輸入每股淨值</div>}
             <div style={{fontSize:11,color:"#4a5a7a",marginTop:5}}>公式：每股淨值 × 0.8</div>
           </div>
           {result?.fv && <PriceTag label="資產股合理價" fv={result.fv} />}
@@ -260,6 +279,7 @@ function CompanyModal({ stock, market, onClose, onMoatUpdate, watchlist, onWatch
   const [translating, setTranslating] = useState(false);
   const [translated, setTranslated] = useState("");
   const [activeTab, setActiveTab] = useState("score");
+  const [moatSaved, setMoatSaved] = useState(false);
 
   const isWatched = watchlist.includes(stock.ticker);
   const toggleMoat = id => {
@@ -359,9 +379,9 @@ function CompanyModal({ stock, market, onClose, onMoatUpdate, watchlist, onWatch
                 </button>
               ))}
             </div>
-            <button onClick={()=>{onMoatUpdate(stock.ticker,moatScore,moats);onClose();}}
-              style={{width:"100%",padding:"13px 0",background:"linear-gradient(135deg,#f0b90b,#d4941a)",border:"none",borderRadius:8,color:"#080c18",fontWeight:700,fontSize:15,cursor:"pointer"}}>
-              儲存護城河評分
+            <button onClick={()=>{onMoatUpdate(stock.ticker,moatScore,moats);setMoatSaved(true);setTimeout(()=>setMoatSaved(false),2500);}}
+              style={{width:"100%",padding:"13px 0",background:moatSaved?"#00c853":"linear-gradient(135deg,#f0b90b,#d4941a)",border:"none",borderRadius:8,color:"#080c18",fontWeight:700,fontSize:15,cursor:"pointer",transition:"background 0.3s"}}>
+              {moatSaved?"✓ 已儲存！可繼續操作其他功能":"儲存護城河評分"}
             </button>
           </div>
         )}
@@ -410,8 +430,7 @@ function StockRow({ stock, market, onSelect, isWatched }) {
   const total=(stock.fin_score||0)+(stock.moat_score||0);
   return (
     <div className="stock-row" onClick={()=>onSelect(stock)}
-      style={{background:"#0d1120",border:`1px solid ${FC(stock.fin_score)}30`,borderRadius:12,padding:"14px 18px",display:"flex",alignItems:"center",gap:14,marginBottom:10,position:"relative"}}>
-      {isWatched && <div style={{position:"absolute",top:8,right:10,fontSize:12,color:"#f0b90b"}}>★</div>}
+      style={{background:"#0d1120",border:`1px solid ${FC(stock.fin_score)}30`,borderRadius:12,padding:"14px 18px",display:"flex",alignItems:"center",gap:14,marginBottom:10}}>
       <div style={{width:54,height:54,borderRadius:11,background:FB(stock.fin_score),border:`2px solid ${FC(stock.fin_score)}66`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0}}>
         <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:24,color:FC(stock.fin_score),lineHeight:1}}>{stock.fin_score}</div>
         <div style={{fontSize:10,color:"#4a5a7a",marginTop:1}}>/6</div>
@@ -419,6 +438,7 @@ function StockRow({ stock, market, onSelect, isWatched }) {
       <div style={{flex:1,minWidth:0}}>
         <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:5}}>
           <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:800,fontSize:19,color:"#ffffff"}}>{stock.ticker.replace(".TW","").replace(".TWO","")}</span>
+          {isWatched&&<span style={{fontSize:14,color:"#f0b90b"}}>★</span>}
           <span style={{fontSize:14,color:"#c0d0e8",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{stock.name}</span>
         </div>
         <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:7}}>
