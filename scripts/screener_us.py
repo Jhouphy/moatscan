@@ -1,68 +1,125 @@
 """
-MoatScan - 美股全市場篩選腳本
+MoatScan - 美股篩選腳本 (S&P500 + NASDAQ100)
+每天收盤後由 GitHub Actions 自動執行
 輸出：data/us_results.json
+
+改進：
+  - requests_cache Session 偽裝瀏覽器 + 快取
+  - 方案三：先初篩過濾低流動性股
 """
 
 import yfinance as yf
 import pandas as pd
+import requests_cache
+import requests as req
 import json
-import requests
 import time
 from datetime import datetime
 import os
 
-# ── 取得美股代號清單（S&P500 + NASDAQ100 + 其他） ────────────────────────
+# ── Session：偽裝瀏覽器 + 12hr 快取 ──────────────────────────────────────
+session = requests_cache.CachedSession(
+    "yfinance_cache",
+    expire_after=43200,
+)
+session.headers.update({
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    ),
+    "Accept": "*/*",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+})
+
+# ── 取得美股清單（S&P500 + NASDAQ100，直接寫死，不依賴 Wikipedia）────────
+SP500 = [
+    "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","BRK-B","LLY","AVGO",
+    "JPM","V","UNH","XOM","MA","COST","HD","PG","JNJ","ORCL","ABBV","WMT",
+    "BAC","MRK","KO","CVX","NFLX","AMD","CRM","PEP","TMO","MCD","ADBE","ACN",
+    "LIN","CSCO","ABT","WFC","GE","DHR","TXN","PM","ISRG","AMGN","NEE","RTX",
+    "IBM","QCOM","SPGI","GS","CAT","INTU","VZ","T","NOW","BKNG","MS","AXP",
+    "UBER","LOW","AMAT","GILD","BLK","ETN","MDT","SYK","TJX","ADI","C","DE",
+    "PLD","CB","VRTX","REGN","MO","MMC","BSX","ZTS","PANW","LRCX","CME",
+    "CI","SO","AON","ITW","SHW","DUK","NOC","APH","KLAC","USB","PNC","ICE",
+    "GD","EMR","MCO","ECL","HUM","F","GM","FDX","NSC","COP","EOG","SLB",
+    "OXY","PSX","VLO","MPC","HAL","DVN","FANG","APA","HES","PXD",
+    "HON","MMM","GWW","ROK","PH","DOV","XYL","AME","IEX","VRSK",
+    "MCK","CAH","ABC","CVS","WBA","HCA","UHS","THC","CNC","MOH",
+    "WM","RSG","ECL","IQV","DGX","LH","PKI",
+    "SBUX","YUM","MCD","DRI","CMG","QSR","WING",
+    "DIS","CMCSA","CHTR","WBD","FOX","FOXA","PARA",
+    "NKE","RL","PVH","TPR","VFC","HBI","UAA",
+    "BA","LMT","GD","NOC","RTX","TDG","HWM","SPR",
+    "D","EXC","AEP","ED","EIX","FE","PCG","XEL","WEC","ES",
+    "AMT","PLD","EQIX","CCI","SPG","O","AVB","EQR","PSA","WELL",
+    "JPM","BAC","WFC","C","GS","MS","USB","PNC","TFC","COF",
+    "BX","KKR","APO","CG","BAM",
+]
+
+NASDAQ100_EXTRA = [
+    "MRVL","CDNS","SNPS","FTNT","CRWD","ZS","OKTA","NET","DDOG","MDB",
+    "SNOW","PLTR","HOOD","COIN","RBLX","U","ABNB","DASH","LYFT","DUOL",
+    "NTNX","PSTG","SMCI","ONTO","WOLF","ON","MPWR","ENPH","SEDG","FSLR",
+    "ILMN","IDXX","ALGN","HOLX","HOLOGIC","DXCM","PODD","NVCR","EXAS",
+    "MELI","SE","GRAB","BEKE","JD","PDD","BIDU","NIO","LI","XPEV",
+]
+
 def get_us_tickers():
-    tickers = set()
+    tickers = list(set(SP500 + NASDAQ100_EXTRA))
+    print(f"[INFO] 美股清單：{len(tickers)} 支")
+    return tickers
 
-    # S&P 500 (Wikipedia)
+
+# ── 方案三：先初篩 ────────────────────────────────────────────────────────
+def pre_filter(tickers):
+    print(f"[初篩] 下載 {len(tickers)} 支最近5日行情...")
     try:
-        sp500 = pd.read_html("https://en.wikipedia.org/wiki/List_of_S%26P_500_companies")[0]
-        for t in sp500["Symbol"].tolist():
-            tickers.add(str(t).replace(".", "-"))
-        print(f"[INFO] S&P500: {len(tickers)} 支")
+        passed = []
+        batch_size = 100
+        for i in range(0, len(tickers), batch_size):
+            batch = tickers[i:i+batch_size]
+            df = yf.download(batch, period="5d", auto_adjust=True, progress=False, threads=True)
+            if df.empty:
+                passed.extend(batch)
+                continue
+            try:
+                close  = df["Close"]
+                volume = df["Volume"]
+            except Exception:
+                passed.extend(batch)
+                continue
+            for t in batch:
+                try:
+                    avg_close  = close[t].dropna().mean()  if t in close.columns  else 0
+                    avg_volume = volume[t].dropna().mean() if t in volume.columns else 0
+                    if avg_close >= 5 and avg_volume >= 100_000:
+                        passed.append(t)
+                except Exception:
+                    passed.append(t)
+            time.sleep(2)
+        print(f"[初篩] 通過：{len(passed)} 支（過濾 {len(tickers)-len(passed)} 支）")
+        return passed
     except Exception as e:
-        print(f"[警告] S&P500 清單失敗: {e}")
-
-    # NASDAQ 100
-    try:
-        nq100 = pd.read_html("https://en.wikipedia.org/wiki/Nasdaq-100")[4]
-        col = [c for c in nq100.columns if "ticker" in c.lower() or "symbol" in c.lower()]
-        if col:
-            for t in nq100[col[0]].tolist():
-                tickers.add(str(t))
-        print(f"[INFO] 加入 NASDAQ100 後: {len(tickers)} 支")
-    except Exception as e:
-        print(f"[警告] NASDAQ100 清單失敗: {e}")
-
-    # 若有本地清單（進階版可加入全 8000 支）
-    if os.path.exists("data/us_tickers_full.txt"):
-        with open("data/us_tickers_full.txt") as f:
-            for line in f:
-                t = line.strip()
-                if t:
-                    tickers.add(t)
-
-    result = sorted(list(tickers))
-    print(f"[INFO] 共取得 {len(result)} 支美股代號")
-    return result
+        print(f"[初篩失敗] {e}，跳過初篩")
+        return tickers
 
 
-# ── 單支股票評分（與台股相同邏輯）─────────────────────────────────────────
-def score_ticker(ticker_str, retries=2):
+# ── 單支股票評分 ───────────────────────────────────────────────────────────
+def score_ticker(ticker_str, retries=3):
     for attempt in range(retries):
         try:
-            tk = yf.Ticker(ticker_str)
+            tk   = yf.Ticker(ticker_str, session=session)
             info = tk.info
 
             name     = info.get("longName") or info.get("shortName") or ticker_str
-            sector   = info.get("sector", "未知")
-            industry = info.get("industry", "未知")
+            sector   = info.get("sector", "Unknown")
+            industry = info.get("industry", "Unknown")
             mkt_cap  = info.get("marketCap", 0)
             price    = info.get("currentPrice") or info.get("regularMarketPrice") or 0
-            summary  = (info.get("longBusinessSummary") or "")[:400]
+            summary  = (info.get("longBusinessSummary") or "")[:300]
 
-            # 市值 < 5億美元跳過
             if mkt_cap and mkt_cap < 500_000_000:
                 return None
 
@@ -89,7 +146,7 @@ def score_ticker(ticker_str, retries=2):
             eps_pass = False
             eps_g3, eps_g5 = None, None
             if len(eps_vals) >= 2:
-                pos = sum(1 for v in eps_vals if v and v > 0)
+                pos   = sum(1 for v in eps_vals if v and v > 0)
                 trend = eps_vals[0] >= eps_vals[-1] * 0.8 if eps_vals[-1] and eps_vals[-1] > 0 else False
                 eps_pass = (pos >= len(eps_vals) * 0.75) and trend
                 def safe_cagr(cur, old, yrs):
@@ -102,16 +159,16 @@ def score_ticker(ticker_str, retries=2):
                     eps_g3 = safe_cagr(eps_vals[0], eps_vals[3], 3)
                 if len(eps_vals) >= 6:
                     eps_g5 = safe_cagr(eps_vals[0], eps_vals[5], 5)
-            scores["eps"]   = 1 if eps_pass else 0
-            details["eps"]  = f"最新EPS ${round(eps_vals[0],2) if eps_vals else 'N/A'}"
+            scores["eps"]  = 1 if eps_pass else 0
+            details["eps"] = f"最新EPS ${round(eps_vals[0],2) if eps_vals else 'N/A'}"
 
             # 2. FCF
-            op_cf  = col_values(cf, "Operating Cash Flow", "Cash From Operations")
-            cap_ex = col_values(cf, "Capital Expenditure", "Purchase Of PPE")
-            fcf_vals = [op_cf[i] - abs(cap_ex[i] if cap_ex[i] else 0) for i in range(min(len(op_cf), len(cap_ex)))]
+            op_cf   = col_values(cf, "Operating Cash Flow", "Cash From Operations")
+            cap_ex  = col_values(cf, "Capital Expenditure", "Purchase Of PPE")
+            fcf_vals = [op_cf[i] - abs(cap_ex[i] or 0) for i in range(min(len(op_cf), len(cap_ex)))]
             fcf_pass = len(fcf_vals) >= 2 and sum(1 for v in fcf_vals if v > 0) >= len(fcf_vals) * 0.8
-            scores["fcf"]   = 1 if fcf_pass else 0
-            details["fcf"]  = f"{sum(1 for v in fcf_vals if v>0)}/{len(fcf_vals)}年FCF為正"
+            scores["fcf"]  = 1 if fcf_pass else 0
+            details["fcf"] = f"{sum(1 for v in fcf_vals if v>0)}/{len(fcf_vals)}年FCF為正"
 
             # 3. ROIC
             ebit_vals  = col_values(fin, "EBIT", "Operating Income")
@@ -125,8 +182,8 @@ def score_ticker(ticker_str, retries=2):
                 if invested > 0:
                     roic_vals.append(nopat / invested)
             roic_pass = bool(roic_vals) and sum(1 for r in roic_vals if r > 0.10) >= len(roic_vals) * 0.7
-            scores["roic"]   = 1 if roic_pass else 0
-            details["roic"]  = f"最新ROIC {round(roic_vals[0]*100,1) if roic_vals else 'N/A'}%"
+            scores["roic"]  = 1 if roic_pass else 0
+            details["roic"] = f"最新ROIC {round(roic_vals[0]*100,1) if roic_vals else 'N/A'}%"
 
             # 4. D/E
             de = info.get("debtToEquity")
@@ -134,26 +191,30 @@ def score_ticker(ticker_str, retries=2):
             if de_ratio is None and total_eq and total_debt:
                 de_ratio = total_debt[0] / total_eq[0] if total_eq[0] else None
             de_pass = de_ratio is not None and de_ratio < 0.5
-            scores["de"]   = 1 if de_pass else 0
-            details["de"]  = f"D/E={round(de_ratio,2) if de_ratio is not None else 'N/A'}"
+            scores["de"]  = 1 if de_pass else 0
+            details["de"] = f"D/E={round(de_ratio,2) if de_ratio is not None else 'N/A'}"
 
-            # 5. Net Margin
+            # 5. Net Margin > 20%
+            nm_vals  = col_values(fin, "Net Income")
             rev_vals = col_values(fin, "Total Revenue", "Revenue")
-            ni_vals  = col_values(fin, "Net Income")
-            nm_vals  = [ni_vals[i]/rev_vals[i] for i in range(min(len(rev_vals),len(ni_vals))) if rev_vals[i]]
-            nm_pass  = bool(nm_vals) and sum(1 for m in nm_vals if m > 0.20) >= len(nm_vals) * 0.6
-            scores["netmargin"]   = 1 if nm_pass else 0
-            details["netmargin"]  = f"最新Net Margin {round(nm_vals[0]*100,1) if nm_vals else 'N/A'}%"
+            nm_margins = []
+            for i in range(min(len(nm_vals), len(rev_vals))):
+                if rev_vals[i] and rev_vals[i] != 0:
+                    nm_margins.append(nm_vals[i] / rev_vals[i])
+            nm_pass = bool(nm_margins) and sum(1 for m in nm_margins if m > 0.20) >= len(nm_margins) * 0.6
+            scores["netmargin"]  = 1 if nm_pass else 0
+            details["netmargin"] = f"最新{round(nm_margins[0]*100,1) if nm_margins else 'N/A'}%"
 
             # 6. 配息
             div_rate  = info.get("dividendRate") or 0
+            div_yield = info.get("dividendYield") or 0
             div_hist  = tk.dividends
             div_years = 0
             if div_hist is not None and not div_hist.empty:
                 div_years = div_hist.resample("Y").sum().astype(bool).sum()
-            div_pass = div_years >= 3 or div_rate > 0
-            scores["dividend"]   = 1 if div_pass else 0
-            details["dividend"]  = f"近{div_years}年有配息"
+            div_pass = div_years >= 3 or (div_rate > 0 and div_yield > 0)
+            scores["dividend"]  = 1 if div_pass else 0
+            details["dividend"] = f"近{div_years}年有配息"
 
             fin_score = sum(scores.values())
 
@@ -180,7 +241,10 @@ def score_ticker(ticker_str, retries=2):
 
         except Exception as e:
             if attempt < retries - 1:
-                time.sleep(3)
+                time.sleep(5)
+            else:
+                print(f"[錯誤] {e.__class__.__name__}: {str(e)[:80]}", end=" ")
+                return None
 
     return None
 
@@ -189,11 +253,14 @@ def score_ticker(ticker_str, retries=2):
 def main():
     os.makedirs("data", exist_ok=True)
 
-    tickers = get_us_tickers()
+    all_tickers = get_us_tickers()
+    tickers = pre_filter(all_tickers)
+
     results, failed = [], []
+    total = len(tickers)
 
     for i, ticker in enumerate(tickers):
-        print(f"[{i+1}/{len(tickers)}] {ticker}", end=" ... ")
+        print(f"[{i+1}/{total}] {ticker}", end=" ... ")
         r = score_ticker(ticker)
         if r:
             results.append(r)
@@ -201,8 +268,12 @@ def main():
         else:
             failed.append(ticker)
             print("skip")
-        if (i + 1) % 50 == 0:
-            time.sleep(5)
+
+        time.sleep(1.0)
+
+        if (i + 1) % 100 == 0:
+            print(f"[暫停] 已處理 {i+1}/{total} 支，休息 15 秒...")
+            time.sleep(15)
 
     results.sort(key=lambda x: x["fin_score"], reverse=True)
 
