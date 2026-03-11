@@ -1,0 +1,67 @@
+name: 📊 Daily Stock Screener
+
+on:
+  schedule:
+    # 台股收盤後 (UTC 07:00 = 台灣 15:00)
+    - cron: "0 7 * * 1-5"
+    # 美股收盤後 (UTC 22:00 = 美東 17:00)  
+    - cron: "0 22 * * 1-5"
+  workflow_dispatch:   # 可手動觸發
+
+jobs:
+  screen-tw:
+    name: 🇹🇼 台股篩選
+    runs-on: ubuntu-latest
+    # 只在台灣時段（UTC 07:xx）執行
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 7'))
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install yfinance pandas requests
+
+      - name: Run Taiwan screener
+        run: python scripts/screener_tw.py
+
+      - name: Commit & push results
+        run: |
+          git config user.name  "MoatScan Bot"
+          git config user.email "bot@moatscan.local"
+          git add data/tw_results.json
+          git diff --staged --quiet || git commit -m "📊 台股篩選更新 $(date +'%Y-%m-%d')"
+          git push
+
+  screen-us:
+    name: 🇺🇸 美股篩選
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && startsWith(github.event.schedule, '0 22'))
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install yfinance pandas requests lxml html5lib beautifulsoup4
+
+      - name: Run US screener
+        run: python scripts/screener_us.py
+
+      - name: Commit & push results
+        run: |
+          git config user.name  "MoatScan Bot"
+          git config user.email "bot@moatscan.local"
+          git add data/us_results.json
+          git diff --staged --quiet || git commit -m "📊 美股篩選更新 $(date +'%Y-%m-%d')"
+          git push
