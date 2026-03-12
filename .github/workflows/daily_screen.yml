@@ -7,66 +7,41 @@ on:
   workflow_dispatch:
 
 jobs:
-  screen-tw:
-    name: 🇹🇼 台股篩選
+  run-all-screeners:
+    name: 📈 執行全市場篩選
     runs-on: ubuntu-latest
     permissions:
       contents: write
 
     steps:
-      - name: Checkout repo
+      - name: 📥 Checkout repo
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up Python
+      - name: 🐍 Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: pip install yfinance pandas requests requests-cache
-
-      - name: Run Taiwan screener
-        run: python scripts/screener_tw.py
-
-      - name: Commit & push results
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/tw_results.json
-          git diff --staged --quiet || git commit -m "📊 台股篩選更新 $(date +'%Y-%m-%d')"
-          git pull --rebase https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
-
-  screen-us:
-    name: 🇺🇸 美股篩選
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
+      - name: 📦 Install dependencies
         run: pip install yfinance pandas requests requests-cache lxml html5lib beautifulsoup4
 
-      - name: Run US screener
-        run: python scripts/screener_us.py
+      - name: 🇹🇼 Run Taiwan screener
+        run: python -u scripts/screener_tw.py
 
-      - name: Commit & push results
+      - name: 🇺🇸 Run US screener
+        run: python -u scripts/screener_us.py
+
+      - name: 📤 Commit & push ALL results
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add data/us_results.json
-          git diff --staged --quiet || git commit -m "📊 美股篩選更新 $(date +'%Y-%m-%d')"
-          git pull --rebase https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
-          git push https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main
+          git add data/*.json
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "📊 自動篩選更新 $(date +'%Y-%m-%d')"
+            git pull --rebase origin main
+            git push
+          else
+            echo "沒有資料變動，跳過上傳。"
+          fi
