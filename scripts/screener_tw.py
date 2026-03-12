@@ -177,7 +177,7 @@ def score_ticker(ticker_str, retries=3):
             div_hist  = tk.dividends
             div_years = 0
             if div_hist is not None and not div_hist.empty:
-                div_years = div_hist.resample("Y").sum().astype(bool).sum()
+                div_years = div_hist.resample("YE").sum().astype(bool).sum()
             div_pass = div_years >= 3 or (div_rate > 0 and div_yield > 0)
             scores["dividend"]  = 1 if div_pass else 0
             details["dividend"] = f"近{div_years}年有配息"
