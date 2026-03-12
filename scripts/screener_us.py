@@ -5,7 +5,7 @@ MoatScan - 美股篩選腳本
 import sys
 import yfinance as yf
 import pandas as pd
-import requests_cache
+import requests as req_plain
 import requests as req
 import json
 import time
@@ -15,13 +15,10 @@ from datetime import datetime
 
 sys.stdout.reconfigure(line_buffering=True)
 
-# ── Session：偽裝瀏覽器 + 快取 ───────────────────────────────────────────
-session = requests_cache.CachedSession("yfinance_cache", expire_after=43200, allowable_codes=[200])
+# Wikipedia 抓取用的 Header（偽裝瀏覽器）
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "*/*", "Accept-Encoding": "gzip, deflate, br", "Connection": "keep-alive",
 }
-session.headers.update(HEADERS)
 
 # ── 美股清單（寫死保底 + 嘗試從維基百科動態抓取）────────────────────────
 FALLBACK_TICKERS = [
@@ -96,7 +93,7 @@ def pre_filter(tickers):
     for i in range(0, len(tickers), batch_size):
         batch = tickers[i:i+batch_size]
         try:
-            df = yf.download(batch, period="5d", auto_adjust=True, progress=False, threads=True)
+            df = yf.download(batch, period="5d", auto_adjust=True, progress=False)
             if df.empty:
                 passed.extend(batch)
                 continue
@@ -123,7 +120,7 @@ def pre_filter(tickers):
 def score_ticker(ticker_str, retries=3):
     for attempt in range(retries):
         try:
-            tk   = yf.Ticker(ticker_str, session=session)
+            tk   = yf.Ticker(ticker_str)
             info = tk.info
 
             name     = info.get("longName") or info.get("shortName") or ticker_str
