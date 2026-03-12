@@ -15,15 +15,7 @@ import os
 # 強制輸出不緩衝（GitHub Actions 才看得到 print）
 sys.stdout.reconfigure(line_buffering=True)
 
-# ── Session：偽裝瀏覽器 + 12hr 快取 ──────────────────────────────────────
-# 快取移除：新版 yfinance 不相容 requests_cache
-# headers (not used with curl_cffi)
-# session.headers.update({
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "*/*",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-})
+# yfinance 新版使用 curl_cffi，不需要額外 session
 
 # ── 取得台股代號 ───────────────────────────────────────────────────────────
 def get_tw_tickers():
