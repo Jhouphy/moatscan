@@ -153,6 +153,16 @@ function SectorHeatmap({ data }) {
 }
 
 // ── 合理價計算區塊 ────────────────────────────────────────────────────────
+const LS_FAIR = "moatscan_fairval_v1";
+const loadFairData = () => { try { return JSON.parse(localStorage.getItem(LS_FAIR)||"{}"); } catch { return {}; } };
+const saveFairData = (ticker, data) => {
+  try {
+    const all = loadFairData();
+    all[ticker] = data;
+    localStorage.setItem(LS_FAIR, JSON.stringify(all));
+  } catch {}
+};
+
 function FairValueCalc({ stock }) {
   // 自動帶入：優先用 JSON 新欄位，fallback 解析 details 字串
   const autoEps = useMemo(()=>{
@@ -162,16 +172,26 @@ function FairValueCalc({ stock }) {
     return m ? m[1] : "";
   },[stock]);
 
-  const [type, setType] = useState(null);
+  // 從 localStorage 讀取已存的資料
+  const saved = useMemo(()=>loadFairData()[stock.ticker]||{}, [stock.ticker]);
+
+  const [type, setType] = useState(saved.type || null);
   const [inputs, setInputs] = useState({
-    eps:  autoEps,
-    g3:   stock.eps_g3  != null ? String(stock.eps_g3)  : "",
-    g5:   stock.eps_g5  != null ? String(stock.eps_g5)  : "",
-    g10:  "",   // 永遠手動
-    div:  stock.div_rate != null ? String(stock.div_rate) : "",
-    bvps: stock.bvps    != null ? String(stock.bvps)    : "",
+    eps:  saved.eps  ?? autoEps,
+    g3:   saved.g3   ?? (stock.eps_g3  != null ? String(stock.eps_g3)  : ""),
+    g5:   saved.g5   ?? (stock.eps_g5  != null ? String(stock.eps_g5)  : ""),
+    g10:  saved.g10  ?? "",
+    div:  saved.div  ?? (stock.div_rate != null ? String(stock.div_rate) : ""),
+    bvps: saved.bvps ?? (stock.bvps    != null ? String(stock.bvps)    : ""),
   });
+  const [fairSaved, setFairSaved] = useState(false);
   const setI = (k,v) => setInputs(p=>({...p,[k]:v}));
+
+  const handleSaveFair = () => {
+    saveFairData(stock.ticker, { type, ...inputs });
+    setFairSaved(true);
+    setTimeout(()=>setFairSaved(false), 2500);
+  };
 
   const result = type ? calcFairValue(type, inputs, stock) : null;
   const price = stock.price || 0;
@@ -294,6 +314,16 @@ function FairValueCalc({ stock }) {
           {result?.fv && <PriceTag label="資產股合理價" fv={result.fv} />}
         </div>
       )}
+
+      {/* 儲存按鈕 */}
+      {type && (
+        <div style={{marginTop:16,textAlign:"right"}}>
+          <button onClick={handleSaveFair}
+            style={{padding:"8px 20px",background:fairSaved?"#00c85320":"#1e2840",border:`1px solid ${fairSaved?"#00c853":"#2a3a58"}`,borderRadius:8,color:fairSaved?"#00c853":"#8899bb",fontSize:13,cursor:"pointer",transition:"all 0.3s"}}>
+            {fairSaved ? "✓ 已儲存！下次開啟自動帶入" : "💾 儲存合理價設定"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -317,12 +347,15 @@ function CompanyModal({ stock, market, onClose, onMoatUpdate, watchlist, onWatch
     if(!stock.summary)return;
     setTranslating(true);
     try{
-      const r=await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&q=${encodeURIComponent(stock.summary)}`);
+      const r=await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-TW&dt=t&q=${encodeURIComponent(stock.summary)}`);
       const d=await r.json();
       setTranslated(d[0].map(s=>s[0]).join(""));
-    }catch{setTranslated("翻譯失敗");}
+    }catch{setTranslated("");}
     finally{setTranslating(false);}
   };
+
+  // 開啟 modal 時自動翻譯
+  React.useEffect(()=>{ if(stock.summary) translate(); }, [stock.ticker]);
 
   const total=(stock.fin_score||0)+moatScore;
   const moatColors=["#ff4757","#ff6d00","#ffd600","#00c853"];
@@ -430,12 +463,7 @@ function CompanyModal({ stock, market, onClose, onMoatUpdate, watchlist, onWatch
               <div style={{background:"#080c18",borderRadius:8,padding:14}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
                   <div style={{fontSize:13,color:"#8899bb",fontWeight:500}}>業務簡介</div>
-                  {market==="US"&&!translated&&(
-                    <button onClick={translate} disabled={translating}
-                      style={{background:"none",border:"1px solid #2a3a58",borderRadius:5,padding:"4px 10px",color:translating?"#3a4a6a":"#4a8aff",fontSize:12,cursor:"pointer"}}>
-                      {translating?"翻譯中...":"🌐 中文翻譯"}
-                    </button>
-                  )}
+                  {translating && <div style={{fontSize:11,color:"#4a8aff"}}>翻譯中...</div>}
                 </div>
                 <div style={{fontSize:13,color:"#c0d0e8",lineHeight:1.9}}>{translated||stock.summary}</div>
               </div>
