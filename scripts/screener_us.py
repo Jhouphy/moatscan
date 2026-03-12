@@ -1,40 +1,30 @@
 """
-MoatScan - 美股篩選腳本 (S&P500 + NASDAQ100)
-每天收盤後由 GitHub Actions 自動執行
+MoatScan - 美股篩選腳本
 輸出：data/us_results.json
-
-改進：
-  - requests_cache Session 偽裝瀏覽器 + 快取
-  - 方案三：先初篩過濾低流動性股
 """
-
+import sys
 import yfinance as yf
 import pandas as pd
 import requests_cache
 import requests as req
 import json
 import time
-from datetime import datetime
+import io
 import os
+from datetime import datetime
 
-# ── Session：偽裝瀏覽器 + 12hr 快取 ──────────────────────────────────────
-session = requests_cache.CachedSession(
-    "yfinance_cache",
-    expire_after=43200,
-)
-session.headers.update({
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "*/*",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Connection": "keep-alive",
-})
+sys.stdout.reconfigure(line_buffering=True)
 
-# ── 取得美股清單（S&P500 + NASDAQ100，直接寫死，不依賴 Wikipedia）────────
-SP500 = [
+# ── Session：偽裝瀏覽器 + 快取 ───────────────────────────────────────────
+session = requests_cache.CachedSession("yfinance_cache", expire_after=43200, allowable_codes=[200])
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "*/*", "Accept-Encoding": "gzip, deflate, br", "Connection": "keep-alive",
+}
+session.headers.update(HEADERS)
+
+# ── 美股清單（寫死保底 + 嘗試從維基百科動態抓取）────────────────────────
+FALLBACK_TICKERS = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","BRK-B","LLY","AVGO",
     "JPM","V","UNH","XOM","MA","COST","HD","PG","JNJ","ORCL","ABBV","WMT",
     "BAC","MRK","KO","CVX","NFLX","AMD","CRM","PEP","TMO","MCD","ADBE","ACN",
@@ -44,52 +34,74 @@ SP500 = [
     "PLD","CB","VRTX","REGN","MO","MMC","BSX","ZTS","PANW","LRCX","CME",
     "CI","SO","AON","ITW","SHW","DUK","NOC","APH","KLAC","USB","PNC","ICE",
     "GD","EMR","MCO","ECL","HUM","F","GM","FDX","NSC","COP","EOG","SLB",
-    "OXY","PSX","VLO","MPC","HAL","DVN","FANG","APA","HES","PXD",
+    "OXY","PSX","VLO","MPC","HAL","DVN","FANG","APA",
     "HON","MMM","GWW","ROK","PH","DOV","XYL","AME","IEX","VRSK",
-    "MCK","CAH","ABC","CVS","WBA","HCA","UHS","THC","CNC","MOH",
-    "WM","RSG","ECL","IQV","DGX","LH","PKI",
-    "SBUX","YUM","MCD","DRI","CMG","QSR","WING",
-    "DIS","CMCSA","CHTR","WBD","FOX","FOXA","PARA",
-    "NKE","RL","PVH","TPR","VFC","HBI","UAA",
-    "BA","LMT","GD","NOC","RTX","TDG","HWM","SPR",
+    "MCK","CAH","CVS","HCA","UHS","THC","CNC","MOH",
+    "WM","RSG","IQV","DGX","LH",
+    "SBUX","YUM","DRI","CMG","QSR","WING",
+    "DIS","CMCSA","CHTR","WBD","FOX","FOXA",
+    "NKE","RL","PVH","TPR","VFC","UAA",
+    "BA","LMT","GD","NOC","RTX","TDG","HWM",
     "D","EXC","AEP","ED","EIX","FE","PCG","XEL","WEC","ES",
     "AMT","PLD","EQIX","CCI","SPG","O","AVB","EQR","PSA","WELL",
-    "JPM","BAC","WFC","C","GS","MS","USB","PNC","TFC","COF",
     "BX","KKR","APO","CG","BAM",
-]
-
-NASDAQ100_EXTRA = [
+    "RVTY","COR",
     "MRVL","CDNS","SNPS","FTNT","CRWD","ZS","OKTA","NET","DDOG","MDB",
-    "SNOW","PLTR","HOOD","COIN","RBLX","U","ABNB","DASH","LYFT","DUOL",
-    "NTNX","PSTG","SMCI","ONTO","WOLF","ON","MPWR","ENPH","SEDG","FSLR",
-    "ILMN","IDXX","ALGN","HOLX","HOLOGIC","DXCM","PODD","NVCR","EXAS",
-    "MELI","SE","GRAB","BEKE","JD","PDD","BIDU","NIO","LI","XPEV",
+    "SNOW","PLTR","ABNB","DASH","DUOL","NTNX","PSTG","SMCI",
+    "ON","MPWR","ENPH","SEDG","FSLR",
+    "ILMN","IDXX","ALGN","HOLX","DXCM","PODD","NVCR","EXAS",
+    "MELI","SE","JD","PDD","NIO","LI","XPEV",
 ]
 
 def get_us_tickers():
-    tickers = list(set(SP500 + NASDAQ100_EXTRA))
-    print(f"[INFO] 美股清單：{len(tickers)} 支")
-    return tickers
+    tickers = set()
+    print("[INFO] 嘗試從 Wikipedia 取得最新清單...", flush=True)
 
-
-# ── 方案三：先初篩 ────────────────────────────────────────────────────────
-def pre_filter(tickers):
-    print(f"[初篩] 下載 {len(tickers)} 支最近5日行情...")
     try:
-        passed = []
-        batch_size = 100
-        for i in range(0, len(tickers), batch_size):
-            batch = tickers[i:i+batch_size]
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        res = req.get(url, headers=HEADERS, timeout=15)
+        df  = pd.read_html(io.StringIO(res.text))[0]
+        sp  = df['Symbol'].str.replace('.', '-', regex=False).tolist()
+        tickers.update(sp)
+        print(f"✓ S&P500: {len(sp)} 支", flush=True)
+    except Exception as e:
+        print(f"[警告] S&P500 抓取失敗: {e}，使用保底清單", flush=True)
+
+    try:
+        url = "https://en.wikipedia.org/wiki/Nasdaq-100"
+        res = req.get(url, headers=HEADERS, timeout=15)
+        df  = pd.read_html(io.StringIO(res.text), match='Ticker')[0]
+        ndx = df['Ticker'].tolist()
+        tickers.update(ndx)
+        print(f"✓ NASDAQ100: {len(ndx)} 支", flush=True)
+    except Exception as e:
+        print(f"[警告] NASDAQ100 抓取失敗: {e}", flush=True)
+
+    if not tickers:
+        print("[INFO] 使用保底清單", flush=True)
+        return FALLBACK_TICKERS
+
+    # 合併保底清單，確保重要股票不遺漏
+    tickers.update(FALLBACK_TICKERS)
+    result = list(tickers)
+    print(f"[INFO] 美股清單共 {len(result)} 支", flush=True)
+    return result
+
+
+# ── 先初篩 ────────────────────────────────────────────────────────────────
+def pre_filter(tickers):
+    print(f"[初篩] 批次下載 {len(tickers)} 支行情...", flush=True)
+    passed = []
+    batch_size = 100
+    for i in range(0, len(tickers), batch_size):
+        batch = tickers[i:i+batch_size]
+        try:
             df = yf.download(batch, period="5d", auto_adjust=True, progress=False, threads=True)
             if df.empty:
                 passed.extend(batch)
                 continue
-            try:
-                close  = df["Close"]
-                volume = df["Volume"]
-            except Exception:
-                passed.extend(batch)
-                continue
+            close  = df["Close"]  if "Close"  in df.columns else df.xs("Close",  axis=1, level=0)
+            volume = df["Volume"] if "Volume" in df.columns else df.xs("Volume", axis=1, level=0)
             for t in batch:
                 try:
                     avg_close  = close[t].dropna().mean()  if t in close.columns  else 0
@@ -98,12 +110,13 @@ def pre_filter(tickers):
                         passed.append(t)
                 except Exception:
                     passed.append(t)
-            time.sleep(2)
-        print(f"[初篩] 通過：{len(passed)} 支（過濾 {len(tickers)-len(passed)} 支）")
-        return passed
-    except Exception as e:
-        print(f"[初篩失敗] {e}，跳過初篩")
-        return tickers
+        except Exception as e:
+            print(f"[初篩批次失敗] {e}", flush=True)
+            passed.extend(batch)
+        time.sleep(2)
+
+    print(f"[初篩] 通過 {len(passed)} 支（過濾 {len(tickers)-len(passed)} 支）", flush=True)
+    return passed
 
 
 # ── 單支股票評分 ───────────────────────────────────────────────────────────
@@ -116,7 +129,7 @@ def score_ticker(ticker_str, retries=3):
             name     = info.get("longName") or info.get("shortName") or ticker_str
             sector   = info.get("sector", "Unknown")
             industry = info.get("industry", "Unknown")
-            mkt_cap  = info.get("marketCap", 0)
+            mkt_cap  = info.get("marketCap") or 0
             price    = info.get("currentPrice") or info.get("regularMarketPrice") or 0
             summary  = (info.get("longBusinessSummary") or "")[:300]
 
@@ -125,7 +138,6 @@ def score_ticker(ticker_str, retries=3):
 
             scores  = {}
             details = {}
-
             fin = tk.financials
             cf  = tk.cashflow
             bs  = tk.balance_sheet
@@ -146,25 +158,23 @@ def score_ticker(ticker_str, retries=3):
             eps_pass = False
             eps_g3, eps_g5 = None, None
             if len(eps_vals) >= 2:
-                pos   = sum(1 for v in eps_vals if v and v > 0)
-                trend = eps_vals[0] >= eps_vals[-1] * 0.8 if eps_vals[-1] and eps_vals[-1] > 0 else False
-                eps_pass = (pos >= len(eps_vals) * 0.75) and trend
+                pos      = sum(1 for v in eps_vals if v and v > 0)
+                trend_ok = eps_vals[0] >= eps_vals[-1] * 0.8 if (eps_vals[-1] and eps_vals[-1] > 0) else False
+                eps_pass = (pos >= len(eps_vals) * 0.75) and trend_ok
                 def safe_cagr(cur, old, yrs):
                     try:
                         if cur and old and old > 0 and cur > 0:
                             return round((pow(cur / old, 1.0 / yrs) - 1) * 100, 2)
                     except: pass
                     return None
-                if len(eps_vals) >= 4:
-                    eps_g3 = safe_cagr(eps_vals[0], eps_vals[3], 3)
-                if len(eps_vals) >= 6:
-                    eps_g5 = safe_cagr(eps_vals[0], eps_vals[5], 5)
+                if len(eps_vals) >= 4: eps_g3 = safe_cagr(eps_vals[0], eps_vals[3], 3)
+                if len(eps_vals) >= 6: eps_g5 = safe_cagr(eps_vals[0], eps_vals[5], 5)
             scores["eps"]  = 1 if eps_pass else 0
             details["eps"] = f"最新EPS ${round(eps_vals[0],2) if eps_vals else 'N/A'}"
 
             # 2. FCF
-            op_cf   = col_values(cf, "Operating Cash Flow", "Cash From Operations")
-            cap_ex  = col_values(cf, "Capital Expenditure", "Purchase Of PPE")
+            op_cf    = col_values(cf, "Operating Cash Flow", "Cash From Operations")
+            cap_ex   = col_values(cf, "Capital Expenditure", "Purchase Of PPE")
             fcf_vals = [op_cf[i] - abs(cap_ex[i] or 0) for i in range(min(len(op_cf), len(cap_ex)))]
             fcf_pass = len(fcf_vals) >= 2 and sum(1 for v in fcf_vals if v > 0) >= len(fcf_vals) * 0.8
             scores["fcf"]  = 1 if fcf_pass else 0
@@ -172,21 +182,20 @@ def score_ticker(ticker_str, retries=3):
 
             # 3. ROIC
             ebit_vals  = col_values(fin, "EBIT", "Operating Income")
-            tax_rate   = info.get("effectiveTaxRate", 0.21)
+            tax_rate   = (info.get("effectiveTaxRate") or 0.21)
             total_eq   = col_values(bs, "Stockholders Equity", "Total Equity")
             total_debt = col_values(bs, "Total Debt", "Long Term Debt")
             roic_vals  = []
             for i in range(min(len(ebit_vals), len(total_eq), len(total_debt))):
                 nopat    = ebit_vals[i] * (1 - tax_rate)
                 invested = (total_eq[i] or 0) + (total_debt[i] or 0)
-                if invested > 0:
-                    roic_vals.append(nopat / invested)
+                if invested > 0: roic_vals.append(nopat / invested)
             roic_pass = bool(roic_vals) and sum(1 for r in roic_vals if r > 0.10) >= len(roic_vals) * 0.7
             scores["roic"]  = 1 if roic_pass else 0
             details["roic"] = f"最新ROIC {round(roic_vals[0]*100,1) if roic_vals else 'N/A'}%"
 
             # 4. D/E
-            de = info.get("debtToEquity")
+            de       = info.get("debtToEquity")
             de_ratio = de / 100 if de is not None else None
             if de_ratio is None and total_eq and total_debt:
                 de_ratio = total_debt[0] / total_eq[0] if total_eq[0] else None
@@ -194,7 +203,7 @@ def score_ticker(ticker_str, retries=3):
             scores["de"]  = 1 if de_pass else 0
             details["de"] = f"D/E={round(de_ratio,2) if de_ratio is not None else 'N/A'}"
 
-            # 5. Net Margin > 20%
+            # 5. Net Margin
             nm_vals  = col_values(fin, "Net Income")
             rev_vals = col_values(fin, "Total Revenue", "Revenue")
             nm_margins = []
@@ -206,8 +215,8 @@ def score_ticker(ticker_str, retries=3):
             details["netmargin"] = f"最新{round(nm_margins[0]*100,1) if nm_margins else 'N/A'}%"
 
             # 6. 配息
-            div_rate  = info.get("dividendRate") or 0
-            div_yield = info.get("dividendYield") or 0
+            div_rate  = (info.get("dividendRate")  or 0)
+            div_yield = (info.get("dividendYield") or 0)
             div_hist  = tk.dividends
             div_years = 0
             if div_hist is not None and not div_hist.empty:
@@ -235,7 +244,7 @@ def score_ticker(ticker_str, retries=3):
                 "eps_g3":      eps_g3,
                 "eps_g5":      eps_g5,
                 "div_rate":    round(div_rate, 2) if div_rate else None,
-                "bvps":        round(info.get("bookValuePerShare", 0), 2) if info.get("bookValuePerShare") else None,
+                "bvps":        round(info.get("bookValuePerShare") or 0, 2) if info.get("bookValuePerShare") else None,
                 "updated":     datetime.now().strftime("%Y-%m-%d"),
             }
 
@@ -243,40 +252,37 @@ def score_ticker(ticker_str, retries=3):
             if attempt < retries - 1:
                 time.sleep(5)
             else:
-                print(f"[錯誤] {e.__class__.__name__}: {str(e)[:80]}", end=" ")
+                print(f"[錯誤] {e.__class__.__name__}: {str(e)[:80]}", end=" ", flush=True)
                 return None
-
     return None
 
 
 # ── 主流程 ────────────────────────────────────────────────────────────────
 def main():
     os.makedirs("data", exist_ok=True)
-
     all_tickers = get_us_tickers()
-    tickers = pre_filter(all_tickers)
+    tickers     = pre_filter(all_tickers)
 
     results, failed = [], []
     total = len(tickers)
+    print(f"[開始] 深度分析 {total} 支美股...", flush=True)
 
     for i, ticker in enumerate(tickers):
-        print(f"[{i+1}/{total}] {ticker}", end=" ... ")
+        print(f"[{i+1}/{total}] {ticker}", end=" ... ", flush=True)
         r = score_ticker(ticker)
         if r:
             results.append(r)
-            print(f"✓ fin={r['fin_score']}/6")
+            print(f"✓ fin={r['fin_score']}/6", flush=True)
         else:
             failed.append(ticker)
-            print("skip")
+            print("skip", flush=True)
 
         time.sleep(1.0)
-
         if (i + 1) % 100 == 0:
-            print(f"[暫停] 已處理 {i+1}/{total} 支，休息 15 秒...")
+            print(f"[暫停] 已處理 {i+1}/{total}，休息 15 秒...", flush=True)
             time.sleep(15)
 
     results.sort(key=lambda x: x["fin_score"], reverse=True)
-
     output = {
         "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
         "market":  "US",
@@ -284,12 +290,10 @@ def main():
         "failed":  len(failed),
         "results": results,
     }
-
     with open("data/us_results.json", "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
 
-    print(f"\n✅ 完成！共 {len(results)} 支，失敗 {len(failed)} 支")
-
+    print(f"\n✅ 美股完成！共 {len(results)} 支，失敗 {len(failed)} 支", flush=True)
 
 if __name__ == "__main__":
     main()
