@@ -98,6 +98,8 @@ def pre_filter(tickers):
             passed.extend(batch)
         time.sleep(2)
     print(f"[初篩] 通過 {len(passed)} 支（過濾 {len(tickers)-len(passed)} 支）", flush=True)
+    print("[暫停] 初篩完畢，等待 60 秒讓 Yahoo 冷卻...", flush=True)
+    time.sleep(60)
     return passed
 
 def col_values(df, *keys):
@@ -281,10 +283,15 @@ def score_ticker(ticker_str, retries=3):
             }
 
         except Exception as e:
-            if attempt < retries - 1:
+            err = str(e)
+            if "Too Many Requests" in err or "RateLimit" in err:
+                wait = 30 * (attempt + 1)
+                print(f"[限流] 等待 {wait} 秒後重試...", end=" ", flush=True)
+                time.sleep(wait)
+            elif attempt < retries - 1:
                 time.sleep(5)
             else:
-                print(f"[錯誤] {e.__class__.__name__}: {str(e)[:80]}", end=" ", flush=True)
+                print(f"[錯誤] {e.__class__.__name__}: {err[:80]}", end=" ", flush=True)
                 return None
     return None
 
@@ -306,10 +313,10 @@ def main():
         else:
             failed.append(ticker)
             print("skip", flush=True)
-        time.sleep(1.0)
+        time.sleep(1.2)
         if (i + 1) % 100 == 0:
-            print(f"[暫停] 已處理 {i+1}/{total}，休息 15 秒...", flush=True)
-            time.sleep(15)
+            print(f"[暫停] 已處理 {i+1}/{total}，休息 20 秒...", flush=True)
+            time.sleep(20)
 
     results.sort(key=lambda x: x["fin_score"], reverse=True)
     output = {

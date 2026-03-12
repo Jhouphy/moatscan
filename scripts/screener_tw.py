@@ -1,14 +1,8 @@
 """
 MoatScan - 台股全市場篩選腳本
 輸出：data/tw_results.json
-
-新增指標：
-  - 公司名稱中文化（來自 TWSE/TPEx 開放資料）
-  - FCF 轉換率（FCF / Net Income）
-  - 毛利率穩定性（近年毛利率標準差）
-  - P/E 評估（trailing PE + PEG ratio）
 """
-import sys, os, json, time, math
+import sys, os, json, time
 import yfinance as yf
 import pandas as pd
 import requests as req
@@ -16,7 +10,6 @@ from datetime import datetime
 
 sys.stdout.reconfigure(line_buffering=True)
 
-# ── 板塊/產業 中文對照表 ──────────────────────────────────────────────────
 SECTOR_ZH = {
     "Technology":"科技","Financial Services":"金融服務","Healthcare":"醫療保健",
     "Consumer Cyclical":"非必需消費","Consumer Defensive":"必需消費",
@@ -52,47 +45,33 @@ INDUSTRY_ZH = {
     "Electronic Distribution":"電子通路",
 }
 
-# ── 取得台股代號 + 中文名稱 ────────────────────────────────────────────────
 def get_tw_tickers():
     tickers = []
-    name_map = {}   # { "2330.TW": "台積電", ... }
-
-    # 上市 TSE
+    name_map = {}
     try:
-        url = "https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL"
-        r = req.get(url, timeout=15)
+        r = req.get("https://openapi.twse.com.tw/v1/exchangeReport/STOCK_DAY_ALL", timeout=15)
         for row in r.json():
             code = row.get("Code", "")
-            name = row.get("Name", "")
             if code.isdigit() and len(code) == 4:
                 key = f"{code}.TW"
                 tickers.append(key)
-                if name:
-                    name_map[key] = name
+                if row.get("Name"): name_map[key] = row["Name"]
     except Exception as e:
-        print(f"[警告] TSE 清單失敗: {e}", flush=True)
-
-    # 上櫃 OTC
+        print(f"[警告] TSE 失敗: {e}", flush=True)
     try:
-        url = "https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes"
-        r = req.get(url, timeout=15)
+        r = req.get("https://www.tpex.org.tw/openapi/v1/tpex_mainboard_daily_close_quotes", timeout=15)
         for row in r.json():
             code = row.get("SecuritiesCompanyCode", "")
-            name = row.get("CompanyName", "")
             if code.isdigit() and len(code) == 4:
                 key = f"{code}.TWO"
                 tickers.append(key)
-                if name:
-                    name_map[key] = name
+                if row.get("CompanyName"): name_map[key] = row["CompanyName"]
     except Exception as e:
-        print(f"[警告] OTC 清單失敗: {e}", flush=True)
-
+        print(f"[警告] OTC 失敗: {e}", flush=True)
     tickers = list(set(tickers))
     print(f"[INFO] 共取得 {len(tickers)} 支，中文名稱 {len(name_map)} 支", flush=True)
     return tickers, name_map
 
-
-# ── 先初篩：過濾微型/低流動性股 ───────────────────────────────────────────
 def pre_filter(tickers):
     print(f"[初篩] 批次下載 {len(tickers)} 支行情...", flush=True)
     passed = []
@@ -102,17 +81,13 @@ def pre_filter(tickers):
             df = yf.download(batch, period="5d", auto_adjust=True, progress=False)
             if df.empty:
                 passed.extend(batch); continue
-            try:
-                close  = df["Close"]
-                volume = df["Volume"]
-            except Exception:
-                passed.extend(batch); continue
+            close  = df["Close"]
+            volume = df["Volume"]
             for t in batch:
                 try:
                     ac = close[t].dropna().mean()  if t in close.columns  else 0
                     av = volume[t].dropna().mean() if t in volume.columns else 0
-                    if ac >= 5 and av >= 200_000:
-                        passed.append(t)
+                    if ac >= 5 and av >= 200_000: passed.append(t)
                 except Exception:
                     passed.append(t)
         except Exception as e:
@@ -120,10 +95,11 @@ def pre_filter(tickers):
             passed.extend(batch)
         time.sleep(2)
     print(f"[初篩] 通過 {len(passed)} 支（過濾 {len(tickers)-len(passed)} 支）", flush=True)
+    # 初篩後等久一點，讓 Yahoo 速率限制冷卻
+    print("[暫停] 初篩完畢，等待 60 秒讓 Yahoo 冷卻...", flush=True)
+    time.sleep(60)
     return passed
 
-
-# ── 輔助：從 DataFrame 抓欄位數列 ─────────────────────────────────────────
 def col_values(df, *keys):
     for key in keys:
         if df is not None and not df.empty:
@@ -132,39 +108,31 @@ def col_values(df, *keys):
                     return df.loc[idx].dropna().tolist()
     return []
 
-
-# ── 新指標計算 ─────────────────────────────────────────────────────────────
 def calc_fcf_conversion(fcf_vals, nm_vals):
-    """FCF 轉換率 = FCF / 淨利，>1 代表現金品質優異"""
     rates = []
     for i in range(min(len(fcf_vals), len(nm_vals))):
         if nm_vals[i] and nm_vals[i] > 0:
             rates.append(fcf_vals[i] / nm_vals[i])
-    if not rates:
-        return None, "N/A"
+    if not rates: return None, "N/A"
     avg = sum(rates) / len(rates)
     return round(avg, 2), f"平均{round(avg,2)}x（{len(rates)}年）"
 
 def calc_gm_stability(fin):
-    """毛利率穩定性：標準差越小 = 定價能力越強"""
     gp_vals  = col_values(fin, "Gross Profit")
     rev_vals = col_values(fin, "Total Revenue", "Revenue")
     margins  = []
     for i in range(min(len(gp_vals), len(rev_vals))):
         if rev_vals[i] and rev_vals[i] != 0:
             margins.append(gp_vals[i] / rev_vals[i] * 100)
-    if len(margins) < 2:
-        return None, None, "N/A"
+    if len(margins) < 2: return None, None, "N/A"
     avg_gm = round(sum(margins) / len(margins), 1)
     std_gm = round(pd.Series(margins).std(), 1)
     grade  = "🟢 穩定" if std_gm < 3 else ("🟡 普通" if std_gm < 7 else "🔴 波動")
     return avg_gm, std_gm, f"均{avg_gm}% σ={std_gm}% {grade}"
 
 def calc_pe_assessment(info, eps_g3):
-    """P/E 評估：trailing PE + PEG ratio"""
     pe = info.get("trailingPE") or info.get("forwardPE")
-    if not pe or pe <= 0:
-        return None, None, "N/A"
+    if not pe or pe <= 0: return None, None, "N/A"
     pe = round(pe, 1)
     if eps_g3 and eps_g3 > 0:
         peg = round(pe / eps_g3, 2)
@@ -172,17 +140,12 @@ def calc_pe_assessment(info, eps_g3):
         return pe, peg, f"PE={pe} PEG={peg} {grade}"
     return pe, None, f"PE={pe}"
 
-
-# ── 單支股票評分 ───────────────────────────────────────────────────────────
 def score_ticker(ticker_str, name_zh, retries=3):
     for attempt in range(retries):
         try:
             tk   = yf.Ticker(ticker_str)
             info = tk.info
-
-            # 名稱：優先用 TWSE 中文名，fallback yfinance
             name = name_zh or info.get("longName") or info.get("shortName") or ticker_str
-
             sector_en   = info.get("sector")   or "未知"
             industry_en = info.get("industry") or "未知"
             sector   = SECTOR_ZH.get(sector_en,   sector_en)
@@ -190,17 +153,14 @@ def score_ticker(ticker_str, name_zh, retries=3):
             mkt_cap  = info.get("marketCap") or 0
             price    = info.get("currentPrice") or info.get("regularMarketPrice") or 0
             summary  = (info.get("longBusinessSummary") or "")[:300]
+            if mkt_cap and mkt_cap < 150_000_000: return None
 
-            if mkt_cap and mkt_cap < 150_000_000:
-                return None
-
-            scores  = {}
-            details = {}
+            scores, details = {}, {}
             fin = tk.financials
             cf  = tk.cashflow
             bs  = tk.balance_sheet
 
-            # 1. EPS ──────────────────────────────────────────────────────
+            # 1. EPS
             eps_vals = col_values(fin, "Basic EPS", "Diluted EPS", "EPS")
             if not eps_vals:
                 te = info.get("trailingEps")
@@ -222,7 +182,7 @@ def score_ticker(ticker_str, name_zh, retries=3):
             scores["eps"]  = 1 if eps_pass else 0
             details["eps"] = f"{len(eps_vals)}年資料，最新${round(eps_vals[0],2) if eps_vals else 'N/A'}"
 
-            # 2. FCF ──────────────────────────────────────────────────────
+            # 2. FCF
             op_cf    = col_values(cf, "Operating Cash Flow", "Cash From Operations")
             cap_ex   = col_values(cf, "Capital Expenditure", "Purchase Of PPE")
             nm_vals  = col_values(fin, "Net Income")
@@ -231,7 +191,7 @@ def score_ticker(ticker_str, name_zh, retries=3):
             scores["fcf"]  = 1 if fcf_pass else 0
             details["fcf"] = f"{sum(1 for v in fcf_vals if v>0)}/{len(fcf_vals)}年FCF為正"
 
-            # 3. ROIC ─────────────────────────────────────────────────────
+            # 3. ROIC
             ebit_vals  = col_values(fin, "EBIT", "Operating Income")
             tax_rate   = (info.get("effectiveTaxRate") or 0.2)
             total_eq   = col_values(bs, "Stockholders Equity", "Total Equity")
@@ -245,7 +205,7 @@ def score_ticker(ticker_str, name_zh, retries=3):
             scores["roic"]  = 1 if roic_pass else 0
             details["roic"] = f"最新ROIC {round(roic_vals[0]*100,1) if roic_vals else 'N/A'}%"
 
-            # 4. D/E ──────────────────────────────────────────────────────
+            # 4. D/E
             de       = info.get("debtToEquity")
             de_ratio = de / 100 if de is not None else None
             if de_ratio is None and total_eq and total_debt:
@@ -254,7 +214,7 @@ def score_ticker(ticker_str, name_zh, retries=3):
             scores["de"]  = 1 if de_pass else 0
             details["de"] = f"D/E={round(de_ratio,2) if de_ratio is not None else 'N/A'}"
 
-            # 5. Net Margin ───────────────────────────────────────────────
+            # 5. Net Margin
             rev_vals = col_values(fin, "Total Revenue", "Revenue")
             nm_margins = []
             for i in range(min(len(nm_vals), len(rev_vals))):
@@ -264,7 +224,7 @@ def score_ticker(ticker_str, name_zh, retries=3):
             scores["netmargin"]  = 1 if nm_pass else 0
             details["netmargin"] = f"最新{round(nm_margins[0]*100,1) if nm_margins else 'N/A'}%"
 
-            # 6. 配息 ─────────────────────────────────────────────────────
+            # 6. 配息
             div_rate  = (info.get("dividendRate")  or 0)
             div_yield = (info.get("dividendYield") or 0)
             div_hist  = tk.dividends
@@ -277,7 +237,7 @@ def score_ticker(ticker_str, name_zh, retries=3):
 
             fin_score = sum(scores.values())
 
-            # ── 新指標（不計入評分，供參考）─────────────────────────────
+            # 新指標
             fcf_conv, fcf_conv_txt = calc_fcf_conversion(fcf_vals, nm_vals)
             avg_gm, std_gm, gm_txt = calc_gm_stability(fin)
             pe_val, peg_val, pe_txt = calc_pe_assessment(info, eps_g3)
@@ -289,49 +249,35 @@ def score_ticker(ticker_str, name_zh, retries=3):
                 shares  = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
                 if eq_vals and shares and shares > 0:
                     bvps = round(eq_vals[0] / shares, 2)
-            if bvps:
-                bvps = round(float(bvps), 2)
+            if bvps: bvps = round(float(bvps), 2)
 
             return {
-                "ticker":      ticker_str,
-                "name":        name,
-                "sector":      sector,
-                "industry":    industry,
-                "market_cap":  mkt_cap,
-                "price":       price,
-                "summary":     summary,
-                "fin_score":   fin_score,
-                "moat_score":  0,
-                "total_score": fin_score,
-                "scores":      scores,
-                "details":     details,
-                "eps_current": round(eps_vals[0], 2) if eps_vals else None,
-                "eps_g3":      eps_g3,
-                "eps_g5":      eps_g5,
-                "div_rate":    round(div_rate, 2) if div_rate else None,
-                "bvps":        bvps,
-                # 新指標
-                "fcf_conv":    fcf_conv,
-                "fcf_conv_txt":fcf_conv_txt,
-                "avg_gm":      avg_gm,
-                "std_gm":      std_gm,
-                "gm_txt":      gm_txt,
-                "pe":          pe_val,
-                "peg":         peg_val,
-                "pe_txt":      pe_txt,
-                "updated":     datetime.now().strftime("%Y-%m-%d"),
+                "ticker":ticker_str,"name":name,"sector":sector,"industry":industry,
+                "market_cap":mkt_cap,"price":price,"summary":summary,
+                "fin_score":fin_score,"moat_score":0,"total_score":fin_score,
+                "scores":scores,"details":details,
+                "eps_current":round(eps_vals[0],2) if eps_vals else None,
+                "eps_g3":eps_g3,"eps_g5":eps_g5,
+                "div_rate":round(div_rate,2) if div_rate else None,"bvps":bvps,
+                "fcf_conv":fcf_conv,"fcf_conv_txt":fcf_conv_txt,
+                "avg_gm":avg_gm,"std_gm":std_gm,"gm_txt":gm_txt,
+                "pe":pe_val,"peg":peg_val,"pe_txt":pe_txt,
+                "updated":datetime.now().strftime("%Y-%m-%d"),
             }
 
         except Exception as e:
-            if attempt < retries - 1:
+            err = str(e)
+            if "Too Many Requests" in err or "RateLimit" in err:
+                wait = 30 * (attempt + 1)
+                print(f"[限流] 等待 {wait} 秒後重試...", end=" ", flush=True)
+                time.sleep(wait)
+            elif attempt < retries - 1:
                 time.sleep(5)
             else:
-                print(f"[錯誤] {e.__class__.__name__}: {str(e)[:80]}", end=" ", flush=True)
+                print(f"[錯誤] {e.__class__.__name__}: {err[:80]}", end=" ", flush=True)
                 return None
     return None
 
-
-# ── 主流程 ────────────────────────────────────────────────────────────────
 def main():
     os.makedirs("data", exist_ok=True)
     all_tickers, name_map = get_tw_tickers()
@@ -351,22 +297,18 @@ def main():
             failed.append(ticker)
             print("skip", flush=True)
 
-        time.sleep(1.0)
+        time.sleep(1.2)
         if (i + 1) % 100 == 0:
-            print(f"[暫停] 已處理 {i+1}/{total}，休息 15 秒...", flush=True)
-            time.sleep(15)
+            print(f"[暫停] 已處理 {i+1}/{total}，休息 20 秒...", flush=True)
+            time.sleep(20)
 
     results.sort(key=lambda x: x["fin_score"], reverse=True)
     output = {
-        "updated": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "market":  "TW",
-        "total":   len(results),
-        "failed":  len(failed),
-        "results": results,
+        "updated":datetime.now().strftime("%Y-%m-%d %H:%M"),
+        "market":"TW","total":len(results),"failed":len(failed),"results":results,
     }
     with open("data/tw_results.json", "w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
-
     print(f"\n✅ 台股完成！共 {len(results)} 支，失敗 {len(failed)} 支", flush=True)
     print(f"6分:{sum(1 for r in results if r['fin_score']==6)}  5分:{sum(1 for r in results if r['fin_score']==5)}  4分:{sum(1 for r in results if r['fin_score']==4)}", flush=True)
 
