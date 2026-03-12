@@ -414,6 +414,48 @@ function CompanyModal({ stock, market, onClose, onMoatUpdate, watchlist, onWatch
                 </div>
               ))}
             </div>
+
+            {/* 護城河量化指標（參考用，不計分） */}
+            {(stock.fcf_conv_txt || stock.gm_txt || stock.pe_txt) && (
+              <div style={{marginTop:14}}>
+                <div style={{fontSize:12,color:"#5a6a8a",marginBottom:8,letterSpacing:1}}>── 護城河量化指標（參考）──</div>
+                <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                  {stock.fcf_conv_txt && stock.fcf_conv_txt !== "N/A" && (
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"#080c18",borderRadius:8,border:"1px solid #1e2840"}}>
+                      <div>
+                        <div style={{fontSize:12,color:"#8899bb"}}>💰 FCF 轉換率</div>
+                        <div style={{fontSize:11,color:"#4a5a7a",marginTop:1}}>淨利轉為現金的能力</div>
+                      </div>
+                      <div style={{fontSize:13,color: stock.fcf_conv >= 1 ? "#00c853" : stock.fcf_conv >= 0.7 ? "#f0b90b" : "#ff4757",fontWeight:600,textAlign:"right"}}>
+                        {stock.fcf_conv_txt}
+                      </div>
+                    </div>
+                  )}
+                  {stock.gm_txt && stock.gm_txt !== "N/A" && (
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"#080c18",borderRadius:8,border:"1px solid #1e2840"}}>
+                      <div>
+                        <div style={{fontSize:12,color:"#8899bb"}}>📊 毛利率穩定性</div>
+                        <div style={{fontSize:11,color:"#4a5a7a",marginTop:1}}>σ 越小 = 定價能力越強</div>
+                      </div>
+                      <div style={{fontSize:13,color: stock.std_gm < 3 ? "#00c853" : stock.std_gm < 7 ? "#f0b90b" : "#ff4757",fontWeight:600,textAlign:"right"}}>
+                        {stock.gm_txt}
+                      </div>
+                    </div>
+                  )}
+                  {stock.pe_txt && stock.pe_txt !== "N/A" && (
+                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"#080c18",borderRadius:8,border:"1px solid #1e2840"}}>
+                      <div>
+                        <div style={{fontSize:12,color:"#8899bb"}}>📈 估值評估</div>
+                        <div style={{fontSize:11,color:"#4a5a7a",marginTop:1}}>PEG &lt; 1 通常為低估</div>
+                      </div>
+                      <div style={{fontSize:13,color: stock.peg && stock.peg < 1 ? "#00c853" : stock.peg && stock.peg < 2 ? "#f0b90b" : "#ff4757",fontWeight:600,textAlign:"right"}}>
+                        {stock.pe_txt}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         )}
 
