@@ -12,6 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      issues: write
 
     steps:
       - name: 📥 Checkout repo
@@ -45,3 +46,40 @@ jobs:
           else
             echo "沒有資料變動，跳過上傳。"
           fi
+
+      # ── 失敗時自動開 Issue 通知 ─────────────────────────────────────────
+      - name: 🚨 失敗通知（自動開 Issue）
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const today = new Date().toISOString().slice(0,10);
+            const title = `🚨 篩選腳本執行失敗 ${today}`;
+            const body  = [
+              `## MoatScan 自動篩選失敗`,
+              ``,
+              `**時間：** ${new Date().toLocaleString('zh-TW', {timeZone:'Asia/Taipei'})}`,
+              `**觸發方式：** ${{ github.event_name }}`,
+              ``,
+              `請前往 [Actions 頁面](https://github.com/${{ github.repository }}/actions) 查看詳細錯誤訊息。`,
+              ``,
+              `> 此 Issue 由 GitHub Actions 自動產生`,
+            ].join('\n');
+
+            // 檢查是否已有相同標題的 open issue，避免重複開
+            const issues = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo:  context.repo.repo,
+              state: 'open',
+              labels: 'screener-failure',
+            });
+            const dup = issues.data.find(i => i.title === title);
+            if (!dup) {
+              await github.rest.issues.create({
+                owner:  context.repo.owner,
+                repo:   context.repo.repo,
+                title,
+                body,
+                labels: ['screener-failure'],
+              });
+            }
