@@ -17,7 +17,77 @@ sys.stdout.reconfigure(line_buffering=True)
 
 # yfinance 新版使用 curl_cffi，不需要額外 session
 
-# ── 取得台股代號 ───────────────────────────────────────────────────────────
+# ── 板塊/產業 中文對照表 ──────────────────────────────────────────────────
+SECTOR_ZH = {
+    "Technology":               "科技",
+    "Financial Services":       "金融服務",
+    "Healthcare":               "醫療保健",
+    "Consumer Cyclical":        "非必需消費",
+    "Consumer Defensive":       "必需消費",
+    "Industrials":              "工業",
+    "Basic Materials":          "基礎材料",
+    "Energy":                   "能源",
+    "Utilities":                "公用事業",
+    "Real Estate":              "不動產",
+    "Communication Services":   "通訊服務",
+    "Communication":            "通訊服務",
+}
+
+INDUSTRY_ZH = {
+    "Semiconductors":                      "半導體",
+    "Semiconductor Equipment & Materials": "半導體設備",
+    "Electronic Components":               "電子零組件",
+    "Electronics & Computer Distribution": "電子通路",
+    "Consumer Electronics":                "消費電子",
+    "Computer Hardware":                   "電腦硬體",
+    "Information Technology Services":     "資訊服務",
+    "Software—Application":                "應用軟體",
+    "Software—Infrastructure":             "基礎軟體",
+    "Internet Content & Information":      "網路內容",
+    "Communication Equipment":             "通訊設備",
+    "Telecom Services":                    "電信服務",
+    "Banks—Regional":                      "區域銀行",
+    "Banks—Diversified":                   "多元銀行",
+    "Insurance—Life":                      "人壽保險",
+    "Insurance—Diversified":               "多元保險",
+    "Asset Management":                    "資產管理",
+    "Capital Markets":                     "資本市場",
+    "Drug Manufacturers—General":          "製藥",
+    "Biotechnology":                       "生技",
+    "Medical Devices":                     "醫療器材",
+    "Diagnostics & Research":              "診斷與研究",
+    "Specialty Retail":                    "特殊零售",
+    "Discount Stores":                     "折扣零售",
+    "Grocery Stores":                      "超市",
+    "Beverages—Non-Alcoholic":             "飲料（非酒精）",
+    "Food Distribution":                   "食品通路",
+    "Packaged Foods":                      "包裝食品",
+    "Restaurants":                         "餐飲",
+    "Auto Manufacturers":                  "汽車製造",
+    "Auto Parts":                          "汽車零件",
+    "Aerospace & Defense":                 "航太與國防",
+    "Industrial Conglomerates":            "工業集團",
+    "Specialty Chemicals":                 "特殊化學",
+    "Chemicals":                           "化學",
+    "Steel":                               "鋼鐵",
+    "Oil & Gas Integrated":               "石油天然氣（整合）",
+    "Oil & Gas Refining & Marketing":     "石油煉製",
+    "Oil & Gas E&P":                      "石油探勘開採",
+    "Utilities—Regulated Electric":       "電力公用事業",
+    "REIT—Industrial":                    "工業型不動產",
+    "REIT—Office":                        "辦公型不動產",
+    "Electronic Gaming & Multimedia":     "電子遊戲",
+    "Pollution & Treatment Controls":     "環保",
+    "Waste Management":                   "廢棄物處理",
+    "Engineering & Construction":         "工程建設",
+    "Electrical Equipment & Parts":       "電氣設備",
+    "Scientific & Technical Instruments": "科學儀器",
+    "Contract Manufacturers":             "代工製造",
+    "Printed Circuit Boards":             "印刷電路板",
+    "Electronic Distribution":            "電子通路",
+}
+
+
 def get_tw_tickers():
     tickers = []
     try:
@@ -84,8 +154,10 @@ def score_ticker(ticker_str, retries=3):
             info = tk.info
 
             name     = info.get("longName") or info.get("shortName") or ticker_str
-            sector   = info.get("sector", "未知")
-            industry = info.get("industry", "未知")
+            sector_en   = info.get("sector") or "未知"
+            industry_en = info.get("industry") or "未知"
+            sector   = SECTOR_ZH.get(sector_en, sector_en)
+            industry = INDUSTRY_ZH.get(industry_en, industry_en)
             mkt_cap  = info.get("marketCap") or 0
             price    = info.get("currentPrice") or info.get("regularMarketPrice") or 0
             summary  = (info.get("longBusinessSummary") or "")[:300]
@@ -184,6 +256,16 @@ def score_ticker(ticker_str, retries=3):
 
             fin_score = sum(scores.values())
 
+            # BVPS：優先用 yfinance 欄位，台股通常沒有，改從資產負債表計算
+            bvps = info.get("bookValuePerShare")
+            if not bvps and bs is not None and not bs.empty:
+                eq_vals = col_values(bs, "Stockholders Equity", "Total Equity", "Common Stock Equity")
+                shares  = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
+                if eq_vals and shares and shares > 0:
+                    bvps = round(eq_vals[0] / shares, 2)
+            if bvps:
+                bvps = round(float(bvps), 2)
+
             return {
                 "ticker":      ticker_str,
                 "name":        name,
@@ -201,7 +283,7 @@ def score_ticker(ticker_str, retries=3):
                 "eps_g3":      eps_g3,
                 "eps_g5":      eps_g5,
                 "div_rate":    round(div_rate, 2) if div_rate else None,
-                "bvps":        round(info.get("bookValuePerShare") or 0, 2) if info.get("bookValuePerShare") else None,
+                "bvps":        bvps,
                 "updated":     datetime.now().strftime("%Y-%m-%d"),
             }
 
