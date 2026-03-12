@@ -521,6 +521,75 @@ function CompanyModal({ stock, market, onClose, onMoatUpdate, watchlist, onWatch
   );
 }
 
+// ── 估值燈號計算 ──────────────────────────────────────────────────────────
+function calcValLight(stock) {
+  const saved = loadFairData()[stock.ticker];
+  if (!saved || !saved.type) return null;
+
+  const price = stock.price || 0;
+  if (!price) return null;
+
+  const type = saved.type;
+
+  if (type === "growth") {
+    // 成長股：3個合理價（3yr/5yr/10yr），取有效的
+    const eps = parseFloat(saved.eps) || 0;
+    const fvs = [
+      saved.g3  ? eps * parseFloat(saved.g3)  : null,
+      saved.g5  ? eps * parseFloat(saved.g5)  : null,
+      saved.g10 ? eps * parseFloat(saved.g10) : null,
+    ].filter(v => v && v > 0);
+    if (fvs.length === 0) return null;
+    const minFV = Math.min(...fvs);
+    const maxFV = Math.max(...fvs);
+    if (price < minFV)  return "green";
+    if (price <= maxFV) return "yellow";
+    return "red";
+  }
+
+  if (type === "dividend") {
+    // 股息股：合理價 = 年股息 × 25
+    const div = parseFloat(saved.div) || 0;
+    if (!div) return null;
+    const fv = div * 25;
+    if (price < fv)          return "green";
+    if (price <= fv * 1.1)   return "yellow";
+    return "red";
+  }
+
+  if (type === "asset") {
+    // 資產股：合理價 = BVPS × 0.8，黃燈區間 0.8x ~ 1.2x BVPS
+    const bvps = parseFloat(saved.bvps) || 0;
+    if (!bvps) return null;
+    if (price < bvps * 0.8)  return "green";
+    if (price <= bvps * 1.2) return "yellow";
+    return "red";
+  }
+  return null;
+}
+
+const VAL_LIGHT = {
+  green:  { color:"#00c853", bg:"#00c85322", label:"低估" },
+  yellow: { color:"#f0b90b", bg:"#f0b90b22", label:"合理" },
+  red:    { color:"#ff4757", bg:"#ff475722", label:"高估" },
+};
+
+function ValLight({ stock }) {
+  const light = calcValLight(stock);
+  if (!light) return null;
+  const { color, bg, label } = VAL_LIGHT[light];
+  return (
+    <div title={`估值：${label}`} style={{
+      width:28, height:28, borderRadius:"50%",
+      background: bg, border: `2px solid ${color}`,
+      display:"flex", alignItems:"center", justifyContent:"center",
+      flexShrink:0, fontSize:10, color, fontWeight:700,
+    }}>
+      {light==="green"?"🟢":light==="yellow"?"🟡":"🔴"}
+    </div>
+  );
+}
+
 // ── 股票列表卡片 ──────────────────────────────────────────────────────────
 function StockRow({ stock, market, onSelect, isWatched }) {
   const total=(stock.fin_score||0)+(stock.moat_score||0);
@@ -548,10 +617,11 @@ function StockRow({ stock, market, onSelect, isWatched }) {
           ))}
         </div>
       </div>
-      <div style={{textAlign:"right",flexShrink:0}}>
-        {stock.moat_score>0&&<div style={{fontSize:12,color:"#f0b90b",marginBottom:3}}>護城河 +{stock.moat_score}</div>}
+      <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6,flexShrink:0}}>
+        <ValLight stock={stock} />
+        {stock.moat_score>0&&<div style={{fontSize:12,color:"#f0b90b"}}>護城河 +{stock.moat_score}</div>}
         <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:16,color:total>=7?"#00c853":"#4a5a7a"}}>{total>=7?`${total} ✦`:`總 ${total}`}</div>
-        <div style={{fontSize:11,color:"#3a4a6a",marginTop:2}}>點擊查看</div>
+        <div style={{fontSize:11,color:"#3a4a6a"}}>點擊查看</div>
       </div>
     </div>
   );
