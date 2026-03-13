@@ -94,34 +94,49 @@ const saveSession   = s  => { try { localStorage.setItem(LS_SESSION, JSON.string
 // ── JSONBin API ────────────────────────────────────────────────────────────
 const JBIN_KEY = "$2a$10$8q1eGlnc8z3jKVjS3uTB3u1fp.h5mB1mq.xJXD08NsUZydQCx02im";
 const JBIN_URL = "https://api.jsonbin.io/v3/b";
+// 目錄 Bin：儲存 "nickname#code" → binId 的對照表（第一次建帳號時自動建立）
+const LS_DIR = "moatscan_dir_binid";  // localStorage key 存目錄 bin 的 ID
 
-async function jbinCreate(data, name) {
+async function jbinCreate(data, isPrivate=false, name="moatscan") {
   const r = await fetch(JBIN_URL, {
     method:"POST",
-    headers:{"Content-Type":"application/json","X-Access-Key":JBIN_KEY,"X-Bin-Name":name,"X-Bin-Private":"false"},
+    headers:{"Content-Type":"application/json","X-Access-Key":JBIN_KEY,
+              "X-Bin-Name":name,"X-Bin-Private":isPrivate?"true":"false"},
     body: JSON.stringify(data),
   });
   const j = await r.json();
   return j.metadata?.id || null;
 }
-
 async function jbinRead(binId) {
-  const r = await fetch(`${JBIN_URL}/${binId}/latest`, {
-    headers:{"X-Access-Key":JBIN_KEY}
-  });
+  const r = await fetch(`${JBIN_URL}/${binId}/latest`, {headers:{"X-Access-Key":JBIN_KEY}});
   const j = await r.json();
   return j.record || null;
 }
-
 async function jbinUpdate(binId, data) {
-  await fetch(`${JBIN_URL}/${binId}`, {
+  const r = await fetch(`${JBIN_URL}/${binId}`, {
     method:"PUT",
     headers:{"Content-Type":"application/json","X-Access-Key":JBIN_KEY},
     body: JSON.stringify(data),
   });
+  return r.ok;
 }
 
-// 簡易 hash（SHA-256 via Web Crypto）
+// 取得或建立目錄 Bin
+async function getOrCreateDir() {
+  let dirId = localStorage.getItem(LS_DIR);
+  if (dirId) return dirId;
+  // 第一次：自動建立一個公開的目錄 bin
+  dirId = await jbinCreate({}, false, "moatscan-directory");
+  if (dirId) localStorage.setItem(LS_DIR, dirId);
+  return dirId;
+}
+
+// 產生 4 位數字代碼
+function genCode() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
+// SHA-256
 async function sha256(str) {
   if (!str) return "";
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
@@ -130,117 +145,164 @@ async function sha256(str) {
 
 // ── 帳號 Modal ─────────────────────────────────────────────────────────────
 function AccountModal({ onClose, session, onLogin, onLogout }) {
-  const [tab, setTab]           = useState(session ? "info" : "login");
-  const [nickname, setNickname] = useState("");
-  const [password, setPassword] = useState("");
-  const [isPublic, setIsPublic] = useState(true);
-  const [binIdInput, setBinId]  = useState("");
-  const [loading, setLoading]   = useState(false);
-  const [msg, setMsg]           = useState("");
-  const [copied, setCopied]     = useState(false);
+  const [tab, setTab]             = useState(session ? "info" : "login");
+  const [nickname, setNickname]   = useState("");
+  const [password, setPassword]   = useState("");
+  const [isPublic, setIsPublic]   = useState(true);
+  const [loginCode, setLoginCode] = useState("");  // "Jhouphy#1234" 格式
+  const [loading, setLoading]     = useState(false);
+  const [msg, setMsg]             = useState(null);
+  const [copied, setCopied]       = useState(false);
+  // 編輯設定用
+  const [editPublic, setEditPublic]   = useState(session?.isPublic ?? true);
+  const [editPw, setEditPw]           = useState("");
+  const [savingSettings, setSaving]   = useState(false);
 
-  const showMsg = (m, isErr=false) => setMsg({ text:m, err:isErr });
+  const showMsg = (text, err=false) => setMsg({text, err});
 
+  // 建立帳號
   const handleCreate = async () => {
-    if (!nickname.trim()) return showMsg("請輸入暱稱", true);
-    setLoading(true); setMsg("");
+    const nick = nickname.trim();
+    if (!nick) return showMsg("請輸入暱稱", true);
+    setLoading(true); setMsg(null);
     try {
       const pwHash = await sha256(password);
-      const initData = {
-        nickname: nickname.trim(),
-        isPublic,
-        pwHash,
+      const code   = genCode();
+      const key    = `${nick.toLowerCase()}#${code}`;
+
+      // 1. 建立使用者 bin
+      const userData = {
+        nickname: nick, code, isPublic, pwHash,
         watchlist: loadWatchlist(),
         fairval:   loadFairData(),
         createdAt: new Date().toISOString(),
       };
-      const binId = await jbinCreate(initData, `moatscan-${nickname.trim()}`);
-      if (!binId) throw new Error("建立失敗");
-      const sess = { binId, nickname: nickname.trim(), pwHash, isPublic };
-      saveSession(sess);
-      onLogin(sess, initData.watchlist, initData.fairval);
-      showMsg("✓ 帳號建立成功！帳號代碼已顯示，請妥善保存");
+      const binId = await jbinCreate(userData, !isPublic, `moatscan-${nick}`);
+      if (!binId) throw new Error("建立 bin 失敗");
+
+      // 2. 更新目錄
+      const dirId  = await getOrCreateDir();
+      const dirRec = await jbinRead(dirId) || {};
+      dirRec[key]  = binId;
+      await jbinUpdate(dirId, dirRec);
+
+      // 3. 儲存 session
+      const sess = { binId, nickname:nick, code, pwHash, isPublic };
+      localStorage.setItem(LS_SESSION, JSON.stringify(sess));
+      onLogin(sess, userData.watchlist, userData.fairval);
       setTab("info");
+      showMsg(`✓ 帳號建立成功！登入代碼：${nick}#${code}`);
     } catch(e) {
       showMsg("建立失敗：" + e.message, true);
     } finally { setLoading(false); }
   };
 
+  // 登入（輸入 Jhouphy#1234 格式）
   const handleLogin = async () => {
-    if (!binIdInput.trim()) return showMsg("請輸入帳號代碼", true);
-    setLoading(true); setMsg("");
+    const raw = loginCode.trim();
+    if (!raw) return showMsg("請輸入登入代碼", true);
+    setLoading(true); setMsg(null);
     try {
-      const rec = await jbinRead(binIdInput.trim());
-      if (!rec) throw new Error("找不到此帳號");
+      // 支援 "Jhouphy#1234" 或 "Jhouphy 1234" 或 "Jhouphy1234"
+      const match = raw.match(/^(.+?)[#\s]?(\d{4})$/);
+      if (!match) throw new Error("格式錯誤，請輸入「暱稱#4位數字」");
+      const nick = match[1].trim().toLowerCase();
+      const code = match[2];
+      const key  = `${nick}#${code}`;
+
+      const dirId = await getOrCreateDir();
+      if (!dirId) throw new Error("找不到帳號目錄");
+      const dirRec = await jbinRead(dirId);
+      if (!dirRec || !dirRec[key]) throw new Error("找不到此帳號，請確認暱稱和數字是否正確");
+
+      const binId = dirRec[key];
+      const rec   = await jbinRead(binId);
+      if (!rec) throw new Error("帳號資料讀取失敗");
+
       if (rec.pwHash) {
         const inputHash = await sha256(password);
         if (inputHash !== rec.pwHash) throw new Error("密碼錯誤");
       }
-      const sess = { binId: binIdInput.trim(), nickname: rec.nickname, pwHash: rec.pwHash, isPublic: rec.isPublic };
-      saveSession(sess);
-      onLogin(sess, rec.watchlist || [], rec.fairval || {});
+
+      const sess = { binId, nickname:rec.nickname, code:rec.code||code, pwHash:rec.pwHash, isPublic:rec.isPublic };
+      localStorage.setItem(LS_SESSION, JSON.stringify(sess));
+      onLogin(sess, rec.watchlist||[], rec.fairval||{});
+      setEditPublic(rec.isPublic);
       showMsg("✓ 登入成功！");
-      setTimeout(onClose, 800);
+      setTimeout(onClose, 700);
     } catch(e) {
       showMsg(e.message, true);
     } finally { setLoading(false); }
   };
 
+  // 上傳到雲端
   const handleSync = async () => {
-    if (!session) return;
-    setLoading(true); setMsg("");
+    setLoading(true); setMsg(null);
     try {
+      const prev = await jbinRead(session.binId) || {};
       await jbinUpdate(session.binId, {
-        ...await jbinRead(session.binId),
-        watchlist: loadWatchlist(),
-        fairval:   loadFairData(),
-        syncedAt:  new Date().toISOString(),
+        ...prev, watchlist:loadWatchlist(), fairval:loadFairData(),
+        syncedAt: new Date().toISOString(),
       });
-      showMsg("✓ 已同步到雲端！");
-    } catch(e) {
-      showMsg("同步失敗：" + e.message, true);
-    } finally { setLoading(false); }
+      showMsg("✓ 已上傳到雲端！");
+    } catch(e) { showMsg("上傳失敗："+e.message, true); }
+    finally { setLoading(false); }
   };
 
+  // 從雲端拉取
   const handlePull = async () => {
-    if (!session) return;
-    setLoading(true); setMsg("");
+    setLoading(true); setMsg(null);
     try {
       const rec = await jbinRead(session.binId);
-      if (rec.watchlist) { saveWatchlist(rec.watchlist); onLogin(session, rec.watchlist, rec.fairval||{}); }
-      showMsg("✓ 已從雲端拉取最新資料！");
-    } catch(e) {
-      showMsg("拉取失敗：" + e.message, true);
-    } finally { setLoading(false); }
+      if (rec?.watchlist) { saveWatchlist(rec.watchlist); onLogin(session, rec.watchlist, rec.fairval||{}); }
+      showMsg("✓ 已從雲端拉取！");
+    } catch(e) { showMsg("拉取失敗："+e.message, true); }
+    finally { setLoading(false); }
   };
 
-  const copyBinId = () => {
+  // 儲存設定（公私密切換 + 改密碼）
+  const handleSaveSettings = async () => {
+    setSaving(true); setMsg(null);
+    try {
+      const prev    = await jbinRead(session.binId) || {};
+      const newHash = editPw ? await sha256(editPw) : prev.pwHash;
+      await jbinUpdate(session.binId, {...prev, isPublic:editPublic, pwHash:newHash});
+      const newSess = {...session, isPublic:editPublic, pwHash:newHash};
+      localStorage.setItem(LS_SESSION, JSON.stringify(newSess));
+      onLogin(newSess, null, null);
+      showMsg("✓ 設定已儲存！");
+      setEditPw("");
+    } catch(e) { showMsg("儲存失敗："+e.message, true); }
+    finally { setSaving(false); }
+  };
+
+  const copyCode = () => {
     if (!session) return;
-    navigator.clipboard.writeText(session.binId).then(()=>{ setCopied(true); setTimeout(()=>setCopied(false), 2000); });
+    navigator.clipboard.writeText(`${session.nickname}#${session.code}`)
+      .then(()=>{ setCopied(true); setTimeout(()=>setCopied(false),2000); });
   };
 
-  const inputStyle = { width:"100%", background:"#080c18", border:"1px solid #2a3a58", borderRadius:8,
-    padding:"10px 14px", color:"#e8f0ff", fontSize:14, boxSizing:"border-box" };
-  const btnPrimary = { width:"100%", padding:"12px", background:"linear-gradient(135deg,#f0b90b,#d4941a)",
-    border:"none", borderRadius:8, color:"#080c18", fontWeight:700, fontSize:15, cursor:"pointer" };
+  const inputStyle = {width:"100%",background:"#080c18",border:"1px solid #2a3a58",borderRadius:8,
+    padding:"10px 14px",color:"#e8f0ff",fontSize:14,boxSizing:"border-box"};
+  const btnPrimary = {width:"100%",padding:"12px",background:"linear-gradient(135deg,#f0b90b,#d4941a)",
+    border:"none",borderRadius:8,color:"#080c18",fontWeight:700,fontSize:15,cursor:"pointer"};
 
   return (
     <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-      <div onClick={e=>e.stopPropagation()} style={{background:"#0d1120",border:"1px solid #2a3a58",borderRadius:16,width:"100%",maxWidth:440,padding:24}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#0d1120",border:"1px solid #2a3a58",borderRadius:16,width:"100%",maxWidth:440,padding:24,maxHeight:"90vh",overflowY:"auto"}}>
 
-        {/* Header */}
         <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
           <div style={{fontSize:18,fontWeight:700,color:"#e8f0ff"}}>☁️ 雲端帳號</div>
           <button onClick={onClose} style={{background:"none",border:"none",color:"#4a5a7a",fontSize:20,cursor:"pointer"}}>✕</button>
         </div>
 
-        {/* Tabs */}
+        {/* Tabs（未登入） */}
         {!session && (
           <div style={{display:"flex",gap:4,marginBottom:20,background:"#080c18",borderRadius:8,padding:4}}>
             {[["login","登入"],["create","建立帳號"]].map(([id,lb])=>(
               <button key={id} onClick={()=>setTab(id)}
-                style={{flex:1,padding:"8px 0",background:tab===id?"#1a2540":"transparent",border:"none",borderRadius:6,
-                  color:tab===id?"#e8f0ff":"#4a5a7a",fontSize:14,cursor:"pointer",fontWeight:tab===id?600:400}}>
+                style={{flex:1,padding:"8px 0",background:tab===id?"#1a2540":"transparent",border:"none",
+                  borderRadius:6,color:tab===id?"#e8f0ff":"#4a5a7a",fontSize:14,cursor:"pointer",fontWeight:tab===id?600:400}}>
                 {lb}
               </button>
             ))}
@@ -251,15 +313,20 @@ function AccountModal({ onClose, session, onLogin, onLogout }) {
         {tab==="login" && !session && (
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
             <div>
-              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:6}}>帳號代碼（建立帳號時取得）</div>
-              <input value={binIdInput} onChange={e=>setBinId(e.target.value)} placeholder="貼上帳號代碼" style={inputStyle} />
+              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:6}}>登入代碼</div>
+              <input value={loginCode} onChange={e=>setLoginCode(e.target.value)}
+                placeholder="例：Jhouphy#1234" style={inputStyle}
+                onKeyDown={e=>e.key==="Enter"&&handleLogin()} />
+              <div style={{fontSize:11,color:"#4a5a7a",marginTop:4}}>格式：暱稱＋井號＋4位數字</div>
             </div>
             <div>
-              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:6}}>密碼（若無密碼請留空）</div>
-              <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="輸入密碼" style={inputStyle} />
+              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:6}}>密碼（若無則留空）</div>
+              <input type="password" value={password} onChange={e=>setPassword(e.target.value)}
+                placeholder="輸入密碼" style={inputStyle}
+                onKeyDown={e=>e.key==="Enter"&&handleLogin()} />
             </div>
-            <button onClick={handleLogin} disabled={loading} style={{...btnPrimary, opacity:loading?0.6:1}}>
-              {loading ? "登入中..." : "登入"}
+            <button onClick={handleLogin} disabled={loading} style={{...btnPrimary,opacity:loading?0.6:1}}>
+              {loading?"登入中...":"登入"}
             </button>
           </div>
         )}
@@ -269,61 +336,102 @@ function AccountModal({ onClose, session, onLogin, onLogout }) {
           <div style={{display:"flex",flexDirection:"column",gap:12}}>
             <div>
               <div style={{fontSize:12,color:"#6a8ab8",marginBottom:6}}>暱稱</div>
-              <input value={nickname} onChange={e=>setNickname(e.target.value)} placeholder="例：老李 / Jhouphy" style={inputStyle} />
+              <input value={nickname} onChange={e=>setNickname(e.target.value)}
+                placeholder="例：老李 / Jhouphy" style={inputStyle} />
+              <div style={{fontSize:11,color:"#4a5a7a",marginTop:4}}>系統會自動產生 4 位數字，例如 Jhouphy#1234</div>
             </div>
             <div>
-              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:6}}>密碼（可留空，不需要特定格式）</div>
-              <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="選填" style={inputStyle} />
+              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:6}}>密碼（可留空）</div>
+              <input type="password" value={password} onChange={e=>setPassword(e.target.value)}
+                placeholder="選填，無特定格式要求" style={inputStyle} />
             </div>
-            <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
-              <input type="checkbox" checked={isPublic} onChange={e=>setIsPublic(e.target.checked)} style={{accentColor:"#f0b90b",width:16,height:16}} />
-              <span style={{fontSize:14,color:"#c0d0e8"}}>公開帳號（觀察清單可被他人查看）</span>
+            <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",padding:"10px 12px",background:"#080c18",borderRadius:8}}>
+              <input type="checkbox" checked={isPublic} onChange={e=>setIsPublic(e.target.checked)}
+                style={{accentColor:"#f0b90b",width:16,height:16}} />
+              <div>
+                <div style={{fontSize:14,color:"#c0d0e8"}}>{isPublic?"🌐 公開帳號":"🔒 私密帳號"}</div>
+                <div style={{fontSize:11,color:"#4a5a7a",marginTop:2}}>
+                  {isPublic?"觀察清單可被他人查看":"僅自己可查看"}
+                </div>
+              </div>
             </label>
             <div style={{fontSize:12,color:"#4a5a7a",background:"#080c18",borderRadius:8,padding:10}}>
-              💡 建立帳號時，會自動將目前裝置的觀察清單和合理價設定同步到雲端
+              💡 建立時會自動將目前裝置的觀察清單同步到雲端
             </div>
-            <button onClick={handleCreate} disabled={loading} style={{...btnPrimary, opacity:loading?0.6:1}}>
-              {loading ? "建立中..." : "建立帳號"}
+            <button onClick={handleCreate} disabled={loading} style={{...btnPrimary,opacity:loading?0.6:1}}>
+              {loading?"建立中...":"建立帳號"}
             </button>
           </div>
         )}
 
-        {/* 已登入 - 帳號資訊 */}
+        {/* 已登入 */}
         {session && (
           <div style={{display:"flex",flexDirection:"column",gap:14}}>
-            <div style={{background:"#080c18",borderRadius:10,padding:14}}>
-              <div style={{fontSize:13,color:"#6a8ab8",marginBottom:4}}>已登入帳號</div>
-              <div style={{fontSize:20,fontWeight:700,color:"#f0b90b"}}>{session.nickname}</div>
-              <div style={{fontSize:12,color:"#4a5a7a",marginTop:4}}>{session.isPublic?"🌐 公開帳號":"🔒 私密帳號"}</div>
-            </div>
 
+            {/* 帳號卡片 */}
             <div style={{background:"#080c18",borderRadius:10,padding:14}}>
-              <div style={{fontSize:13,color:"#6a8ab8",marginBottom:8}}>帳號代碼（在其他裝置登入時使用）</div>
-              <div style={{fontSize:12,color:"#c0d0e8",fontFamily:"monospace",wordBreak:"break-all",marginBottom:8,lineHeight:1.6}}>
-                {session.binId}
+              <div style={{fontSize:13,color:"#6a8ab8",marginBottom:6}}>已登入帳號</div>
+              <div style={{fontSize:22,fontWeight:700,color:"#f0b90b"}}>{session.nickname}</div>
+              <div style={{fontSize:13,color:"#8899bb",marginTop:4}}>
+                {session.isPublic?"🌐 公開":"🔒 私密"}
               </div>
-              <button onClick={copyBinId} style={{padding:"6px 14px",background:"#1a2540",border:"1px solid #2a3a58",borderRadius:6,color:"#4a8aff",fontSize:12,cursor:"pointer"}}>
-                {copied ? "✓ 已複製！" : "📋 複製代碼"}
+            </div>
+
+            {/* 登入代碼 */}
+            <div style={{background:"#080c18",borderRadius:10,padding:14}}>
+              <div style={{fontSize:13,color:"#6a8ab8",marginBottom:8}}>登入代碼（其他裝置使用）</div>
+              <div style={{fontSize:24,fontWeight:900,color:"#e8f0ff",fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:2,marginBottom:10}}>
+                {session.nickname}#<span style={{color:"#f0b90b"}}>{session.code}</span>
+              </div>
+              <button onClick={copyCode} style={{padding:"6px 16px",background:"#1a2540",border:"1px solid #2a3a58",
+                borderRadius:6,color:copied?"#00c853":"#4a8aff",fontSize:13,cursor:"pointer",fontWeight:600}}>
+                {copied?"✓ 已複製！":"📋 複製代碼"}
               </button>
             </div>
 
+            {/* 同步按鈕 */}
             <div style={{display:"flex",gap:8}}>
-              <button onClick={handleSync} disabled={loading} style={{flex:1,padding:"11px 0",background:"#1a2540",border:"1px solid #2a3a58",borderRadius:8,color:"#4a8aff",fontSize:14,cursor:"pointer",fontWeight:600}}>
-                {loading ? "處理中..." : "⬆️ 上傳到雲端"}
+              <button onClick={handleSync} disabled={loading}
+                style={{flex:1,padding:"11px 0",background:"#1a2540",border:"1px solid #2a3a58",
+                  borderRadius:8,color:"#4a8aff",fontSize:14,cursor:"pointer",fontWeight:600,opacity:loading?0.6:1}}>
+                {loading?"處理中...":"⬆️ 上傳"}
               </button>
-              <button onClick={handlePull} disabled={loading} style={{flex:1,padding:"11px 0",background:"#1a2540",border:"1px solid #2a3a58",borderRadius:8,color:"#00c853",fontSize:14,cursor:"pointer",fontWeight:600}}>
-                {loading ? "處理中..." : "⬇️ 從雲端拉取"}
+              <button onClick={handlePull} disabled={loading}
+                style={{flex:1,padding:"11px 0",background:"#1a2540",border:"1px solid #2a3a58",
+                  borderRadius:8,color:"#00c853",fontSize:14,cursor:"pointer",fontWeight:600,opacity:loading?0.6:1}}>
+                {loading?"處理中...":"⬇️ 拉取"}
               </button>
             </div>
 
-            <button onClick={()=>{ onLogout(); onClose(); }}
-              style={{padding:"11px 0",background:"none",border:"1px solid #ff475740",borderRadius:8,color:"#ff4757",fontSize:14,cursor:"pointer"}}>
+            {/* 設定（公私密、改密碼） */}
+            <div style={{background:"#080c18",borderRadius:10,padding:14}}>
+              <div style={{fontSize:13,color:"#6a8ab8",marginBottom:12}}>帳號設定</div>
+              <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer",marginBottom:12}}>
+                <input type="checkbox" checked={editPublic} onChange={e=>setEditPublic(e.target.checked)}
+                  style={{accentColor:"#f0b90b",width:16,height:16}} />
+                <div>
+                  <div style={{fontSize:14,color:"#c0d0e8"}}>{editPublic?"🌐 公開帳號":"🔒 私密帳號"}</div>
+                  <div style={{fontSize:11,color:"#4a5a7a"}}>{editPublic?"切換為私密後，他人無法查看":"切換為公開後，觀察清單可被查看"}</div>
+                </div>
+              </label>
+              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:6}}>更改密碼（留空則不變）</div>
+              <input type="password" value={editPw} onChange={e=>setEditPw(e.target.value)}
+                placeholder="輸入新密碼" style={{...inputStyle,marginBottom:10}} />
+              <button onClick={handleSaveSettings} disabled={savingSettings}
+                style={{width:"100%",padding:"10px",background:"#1a3a28",border:"1px solid #00c85340",
+                  borderRadius:8,color:"#00c853",fontSize:14,cursor:"pointer",fontWeight:600,opacity:savingSettings?0.6:1}}>
+                {savingSettings?"儲存中...":"儲存設定"}
+              </button>
+            </div>
+
+            <button onClick={()=>{onLogout();onClose();}}
+              style={{padding:"11px 0",background:"none",border:"1px solid #ff475740",
+                borderRadius:8,color:"#ff4757",fontSize:14,cursor:"pointer"}}>
               登出
             </button>
           </div>
         )}
 
-        {/* 訊息 */}
         {msg && (
           <div style={{marginTop:14,padding:"10px 14px",background:msg.err?"#ff475715":"#00c85315",
             border:`1px solid ${msg.err?"#ff475740":"#00c85340"}`,borderRadius:8,
@@ -331,545 +439,6 @@ function AccountModal({ onClose, session, onLogin, onLogout }) {
             {msg.text}
           </div>
         )}
-      </div>
-    </div>
-  );
-}
-
-// ── 合理價計算 ────────────────────────────────────────────────────────────
-function calcFairValue(type, inputs, stock) {
-  const eps = parseFloat(inputs.eps) || 0;
-  const div = parseFloat(inputs.div) || 0;
-  const bvps = parseFloat(inputs.bvps) || 0;
-  const g3 = parseFloat(inputs.g3) / 100 || 0;
-  const g5 = parseFloat(inputs.g5) / 100 || 0;
-  const g10 = parseFloat(inputs.g10) / 100 || 0;
-
-  if (type === "growth") {
-    // 公式：EPS × 成長率%（成長率直接作為合理PE倍數，PEG概念）
-    const r3  = parseFloat(inputs.g3)  || 0;
-    const r5  = parseFloat(inputs.g5)  || 0;
-    const r10 = parseFloat(inputs.g10) || 0;
-    const fv3  = r3  > 0 ? eps * r3  : null;
-    const fv5  = r5  > 0 ? eps * r5  : null;
-    const fv10 = r10 > 0 ? eps * r10 : null;
-    return { fv3, fv5, fv10 };
-  }
-  if (type === "dividend") {
-    return { fv: div > 0 ? div * 25 : null };
-  }
-  if (type === "asset") {
-    return { fv: bvps > 0 ? bvps * 0.8 : null };
-  }
-  return {};
-}
-
-// ── 板塊熱圖 ──────────────────────────────────────────────────────────────
-function SectorHeatmap({ data }) {
-  const sectors = useMemo(() => {
-    const map = {};
-    (data||[]).forEach(r=>{
-      const s=r.sector||"其他";
-      if(!map[s])map[s]={name:s,count:0,avg:0,high:0};
-      map[s].count++; map[s].avg+=r.fin_score;
-      if(r.fin_score>=5)map[s].high++;
-    });
-    return Object.values(map).map(s=>({...s,avg:s.avg/s.count})).sort((a,b)=>b.high-a.high);
-  },[data]);
-  const maxH=Math.max(...sectors.map(s=>s.high),1);
-  return (
-    <div style={{marginBottom:24}}>
-      <div style={{fontSize:13,color:"#8899bb",marginBottom:12,fontWeight:500}}>▸ 板塊分佈（財務5–6分股票數量）</div>
-      <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
-        {sectors.map(s=>{
-          const bg=s.high>=3?`rgba(0,200,83,${0.08+s.high/maxH*0.18})`:s.high>=1?"rgba(255,214,0,0.08)":"#0d1120";
-          const bc=s.high>=3?"#00c85340":s.high>=1?"#ffd60030":"#1e2a40";
-          return (
-            <div key={s.name} style={{background:bg,border:`1px solid ${bc}`,borderRadius:10,padding:"10px 14px",minWidth:110}}>
-              <div style={{fontSize:13,color:"#aabbd4",marginBottom:4,fontWeight:500}}>{s.name}</div>
-              <div style={{fontSize:20,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:800}}>
-                <span style={{color:s.high>=3?"#00c853":s.high>=1?"#ffd600":"#3a4a6a"}}>{s.high}</span>
-                <span style={{color:"#2a3555",fontSize:14}}> / {s.count}</span>
-              </div>
-              <div style={{fontSize:11,color:"#4a5a7a",marginTop:2}}>平均 {s.avg.toFixed(1)}/6</div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-// ── 合理價計算區塊 ────────────────────────────────────────────────────────
-const LS_FAIR = "moatscan_fairval_v1";
-const loadFairData = () => { try { return JSON.parse(localStorage.getItem(LS_FAIR)||"{}"); } catch { return {}; } };
-const saveFairData = (ticker, data) => {
-  try {
-    const all = loadFairData();
-    all[ticker] = data;
-    localStorage.setItem(LS_FAIR, JSON.stringify(all));
-  } catch {}
-};
-
-function FairValueCalc({ stock }) {
-  // 自動帶入：優先用 JSON 新欄位，fallback 解析 details 字串
-  const autoEps = useMemo(()=>{
-    if (stock.eps_current) return String(stock.eps_current);
-    const raw = stock.details?.eps || "";
-    const m = raw.match(/[\$]?([\d.]+)/);
-    return m ? m[1] : "";
-  },[stock]);
-
-  // 從 localStorage 讀取已存的資料
-  const saved = useMemo(()=>loadFairData()[stock.ticker]||{}, [stock.ticker]);
-
-  const [type, setType] = useState(saved.type || null);
-  const [inputs, setInputs] = useState({
-    eps:  saved.eps  ?? autoEps,
-    g3:   saved.g3   ?? (stock.eps_g3  != null ? String(stock.eps_g3)  : ""),
-    g5:   saved.g5   ?? (stock.eps_g5  != null ? String(stock.eps_g5)  : ""),
-    g10:  saved.g10  ?? "",
-    div:  saved.div  ?? (stock.div_rate != null ? String(stock.div_rate) : ""),
-    bvps: saved.bvps ?? (stock.bvps    != null ? String(stock.bvps)    : ""),
-  });
-  const [fairSaved, setFairSaved] = useState(false);
-  const setI = (k,v) => setInputs(p=>({...p,[k]:v}));
-
-  const handleSaveFair = () => {
-    saveFairData(stock.ticker, { type, ...inputs });
-    setFairSaved(true);
-    setTimeout(()=>setFairSaved(false), 2500);
-  };
-
-  const result = type ? calcFairValue(type, inputs, stock) : null;
-  const price = stock.price || 0;
-  const sbUrl = stock.ticker.includes(".TW") || stock.ticker.includes(".TWO")
-    ? `https://www.stockboss.io/symbol/TPE:${stock.ticker.replace(".TW","").replace(".TWO","")}`
-    : `https://www.stockboss.io/symbol/${stock.ticker}`;
-
-  const PriceTag = ({label, fv}) => {
-    if(!fv)return null;
-    const diff = ((price-fv)/fv*100).toFixed(1);
-    const cheap = price < fv;
-    return (
-      <div style={{background:"#080c18",borderRadius:8,padding:"10px 14px",flex:1,minWidth:120,border:`1px solid ${cheap?"#00c85330":"#ff475730"}`}}>
-        <div style={{fontSize:11,color:"#6a8ab8",marginBottom:4}}>{label}</div>
-        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:800,fontSize:22,color:cheap?"#00c853":"#ffd600"}}>{fmt$(fv)}</div>
-        <div style={{fontSize:11,marginTop:3,color:cheap?"#00c853":"#ff8c42"}}>
-          {cheap?`低估 ${Math.abs(diff)}%`:`高估 ${Math.abs(diff)}%`}
-          {price>0 && <span style={{color:"#4a5a7a",marginLeft:6}}>現價{fmt$(price)}</span>}
-        </div>
-      </div>
-    );
-  };
-
-  return (
-    <div style={{background:"#080c18",borderRadius:10,padding:16,marginBottom:16}}>
-      <div style={{fontSize:14,color:"#8899bb",fontWeight:500,marginBottom:12}}>合理價計算</div>
-
-      {/* 股票類型選擇 */}
-      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:14}}>
-        {[
-          {id:"growth",  icon:"📈", label:"成長股", desc:"EPS × 成長率 × 15"},
-          {id:"dividend",icon:"💰", label:"股息股", desc:"年股息 ÷ 4%"},
-          {id:"asset",   icon:"🏦", label:"資產股", desc:"每股淨值 × 0.8"},
-        ].map(t=>(
-          <button key={t.id} className={`type-btn ${type===t.id?"active":""}`} onClick={()=>setType(type===t.id?null:t.id)}>
-            <div style={{fontSize:16,marginBottom:3}}>{t.icon}</div>
-            <div style={{fontWeight:600,fontSize:13}}>{t.label}</div>
-            <div style={{fontSize:11,opacity:0.7,marginTop:2}}>{t.desc}</div>
-          </button>
-        ))}
-      </div>
-
-      {/* 成長股輸入 */}
-      {type==="growth" && (
-        <div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:10}}>
-            <div>
-              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>當前 EPS（元）</div>
-              <input type="number" value={inputs.eps} onChange={e=>setI("eps",e.target.value)} placeholder="例：42.3"
-                style={{width:"100%",background:"#0d1120",border:`1px solid ${inputs.eps?"#f0b90b55":"#1e2840"}`,borderRadius:6,padding:"8px 12px",color:"#e8f0ff",fontSize:14}} />
-              {inputs.eps&&<div style={{fontSize:10,color:"#f0b90b",marginTop:3}}>✓ 自動帶入，可手動修改</div>}
-            </div>
-            <div style={{fontSize:11,color:"#4a6080",padding:"6px 0",lineHeight:1.8}}>
-              10年成長率請至
-              <a href={sbUrl} target="_blank" rel="noopener noreferrer"
-                style={{color:"#4a8aff",marginLeft:4,textDecoration:"underline"}}>
-                stockboss.io ↗
-              </a><br/>
-              <span style={{color:"#3a4a6a",fontSize:10}}>查詢「EPS without NRI」成長率欄</span>
-            </div>
-          </div>
-          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:8,marginBottom:12}}>
-            {[
-              ["g3",  "3年成長率 %",  stock.eps_g3  != null],
-              ["g5",  "5年成長率 %",  stock.eps_g5  != null],
-              ["g10", "10年成長率 %", false],
-            ].map(([k,lb,isAuto])=>(
-              <div key={k}>
-                <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5,display:"flex",alignItems:"center",gap:5}}>
-                  {lb}
-                  <span style={{fontSize:10,padding:"1px 5px",borderRadius:3,
-                    background:isAuto?"#f0b90b20":"#1e284040",
-                    color:isAuto?"#f0b90b":"#4a5a7a"}}>
-                    {isAuto?"自動":"手動"}
-                  </span>
-                </div>
-                <input type="number" value={inputs[k]} onChange={e=>setI(k,e.target.value)}
-                  placeholder={k==="g10"?"查 stockboss":""}
-                  style={{width:"100%",background:"#0d1120",
-                    border:`1px solid ${inputs[k]?(isAuto?"#f0b90b55":"#4a8aff55"):"#1e2840"}`,
-                    borderRadius:6,padding:"8px 10px",color:"#e8f0ff",fontSize:14}} />
-              </div>
-            ))}
-          </div>
-          <div style={{fontSize:11,color:"#4a5a7a",marginBottom:10}}>公式：EPS × 成長率%（PEG概念）</div>
-          {result && (
-            <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-              <PriceTag label="3年合理價" fv={result.fv3} />
-              <PriceTag label="5年合理價" fv={result.fv5} />
-              <PriceTag label="10年合理價" fv={result.fv10} />
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* 股息股輸入 */}
-      {type==="dividend" && (
-        <div>
-          <div style={{maxWidth:260,marginBottom:12}}>
-            <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>年度股息（元/股）</div>
-            <input type="number" value={inputs.div} onChange={e=>setI("div",e.target.value)} placeholder="例：3.5"
-              style={{width:"100%",background:"#0d1120",border:`1px solid ${inputs.div?"#f0b90b55":"#1e2840"}`,borderRadius:6,padding:"8px 12px",color:"#e8f0ff",fontSize:14}} />
-            {inputs.div?<div style={{fontSize:10,color:"#f0b90b",marginTop:3}}>✓ 自動帶入，可手動修改</div>:<div style={{fontSize:10,color:"#4a5a7a",marginTop:3}}>請手動輸入年度股息</div>}
-            <div style={{fontSize:11,color:"#4a5a7a",marginTop:5}}>公式：年股息 × 25（以4%殖利率估算）</div>
-          </div>
-          {result?.fv && <PriceTag label="股息股合理價" fv={result.fv} />}
-        </div>
-      )}
-
-      {/* 資產股輸入 */}
-      {type==="asset" && (
-        <div>
-          <div style={{maxWidth:260,marginBottom:12}}>
-            <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>每股淨值 Book Value Per Share（元）</div>
-            <input type="number" value={inputs.bvps} onChange={e=>setI("bvps",e.target.value)} placeholder="例：120.5"
-              style={{width:"100%",background:"#0d1120",border:`1px solid ${inputs.bvps?"#f0b90b55":"#1e2840"}`,borderRadius:6,padding:"8px 12px",color:"#e8f0ff",fontSize:14}} />
-            {inputs.bvps?<div style={{fontSize:10,color:"#f0b90b",marginTop:3}}>✓ 自動帶入，可手動修改</div>:<div style={{fontSize:10,color:"#4a5a7a",marginTop:3}}>請手動輸入每股淨值</div>}
-            <div style={{fontSize:11,color:"#4a5a7a",marginTop:5}}>公式：每股淨值 × 0.8</div>
-          </div>
-          {result?.fv && <PriceTag label="資產股合理價" fv={result.fv} />}
-        </div>
-      )}
-
-      {/* 儲存按鈕 */}
-      {type && (
-        <div style={{marginTop:16,textAlign:"right"}}>
-          <button onClick={handleSaveFair}
-            style={{padding:"8px 20px",background:fairSaved?"#00c85320":"#1e2840",border:`1px solid ${fairSaved?"#00c853":"#2a3a58"}`,borderRadius:8,color:fairSaved?"#00c853":"#8899bb",fontSize:13,cursor:"pointer",transition:"all 0.3s"}}>
-            {fairSaved ? "✓ 已儲存！下次開啟自動帶入" : "💾 儲存合理價設定"}
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── 公司詳情彈窗 ──────────────────────────────────────────────────────────
-function CompanyModal({ stock, market, onClose, onMoatUpdate, watchlist, onWatchToggle }) {
-  const [moats, setMoats] = useState([]);
-  const [moatScore, setMoatScore] = useState(stock.moat_score||0);
-  const [translating, setTranslating] = useState(false);
-  const [translated, setTranslated] = useState("");
-  const [activeTab, setActiveTab] = useState("score");
-  const [moatSaved, setMoatSaved] = useState(false);
-
-  const isWatched = watchlist.includes(stock.ticker);
-  const toggleMoat = id => {
-    const next=moats.includes(id)?moats.filter(m=>m!==id):[...moats,id];
-    setMoats(next);
-    setMoatScore(next.length===0?0:next.length===1?1:next.length<=3?2:3);
-  };
-  const translate = async()=>{
-    if(!stock.summary)return;
-    setTranslating(true);
-    try{
-      const r=await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-TW&dt=t&q=${encodeURIComponent(stock.summary)}`);
-      const d=await r.json();
-      setTranslated(d[0].map(s=>s[0]).join(""));
-    }catch{setTranslated("");}
-    finally{setTranslating(false);}
-  };
-
-  // 開啟 modal 時自動翻譯
-  React.useEffect(()=>{ if(stock.summary) translate(); }, [stock.ticker]);
-
-  const total=(stock.fin_score||0)+moatScore;
-  const moatColors=["#ff4757","#ff6d00","#ffd600","#00c853"];
-  const moatLabels=["無","弱","中","強"];
-
-  return (
-    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
-      <div onClick={e=>e.stopPropagation()} style={{background:"#0d1120",border:"1px solid #2a3a58",borderRadius:16,width:"100%",maxWidth:620,maxHeight:"92vh",overflowY:"auto",padding:24}}>
-
-        {/* Header */}
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:18}}>
-          <div style={{flex:1}}>
-            <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:6,flexWrap:"wrap"}}>
-              <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:28,color:"#ffffff"}}>{stock.ticker.replace(".TW","").replace(".TWO","")}</span>
-              <span style={{background:"#1a2540",padding:"3px 10px",borderRadius:5,fontSize:12,color:"#6a8ab8"}}>{market}</span>
-              {/* 觀察清單按鈕 */}
-              <button className="watch-btn" onClick={()=>onWatchToggle(stock.ticker)}
-                style={{marginLeft:4,padding:"4px 12px",borderRadius:6,border:`1.5px solid ${isWatched?"#f0b90b":"#2a3a58"}`,background:isWatched?"#f0b90b18":"transparent",color:isWatched?"#f0b90b":"#6a8ab8",fontSize:12,fontWeight:600}}>
-                {isWatched?"★ 已追蹤":"☆ 加入觀察"}
-              </button>
-            </div>
-            <div style={{color:"#c8d8f0",fontSize:16,fontWeight:500,marginBottom:6}}>{stock.name}</div>
-            <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-              <span style={{background:"#1a1a00",border:"1px solid #f0b90b44",borderRadius:5,padding:"3px 10px",fontSize:12,color:"#f0b90b"}}>{stock.sector}</span>
-              <span style={{background:"#0d1628",border:"1px solid #2a3a58",borderRadius:5,padding:"3px 10px",fontSize:12,color:"#6a8ab8"}}>{stock.industry}</span>
-            </div>
-          </div>
-          <div style={{textAlign:"right",flexShrink:0,paddingLeft:12}}>
-            <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:44,color:TC(total),lineHeight:1}}>{total}</div>
-            <div style={{fontSize:12,color:"#4a5a7a"}}>/9 總分</div>
-            <div style={{fontSize:13,fontWeight:600,color:total>=7?"#00c853":"#ff4757",marginTop:3}}>{total>=7?"✦ 達標":"✗ 未達標"}</div>
-          </div>
-        </div>
-
-        {/* Tabs */}
-        <div style={{borderBottom:"1px solid #1e2840",marginBottom:16,display:"flex"}}>
-          {[["score","財務評分"],["moat","護城河"],["fair","合理價"],["info","公司簡介"]].map(([id,lb])=>(
-            <button key={id} className={`tab-btn ${activeTab===id?"active":""}`} onClick={()=>setActiveTab(id)}>{lb}</button>
-          ))}
-        </div>
-
-        {/* Tab: 財務評分 */}
-        {activeTab==="score" && (
-          <div>
-            <div style={{fontSize:13,color:"#8899bb",marginBottom:12}}>財務指標　{stock.fin_score}/6 分</div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
-              {Object.entries(stock.scores||{}).map(([k,v])=>(
-                <div key={k} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 12px",background:"#080c18",borderRadius:8,border:`1px solid ${v?"#00c85330":"#1e2840"}`}}>
-                  <div style={{width:24,height:24,borderRadius:5,background:v?"#00c85322":"#ff475722",border:`1.5px solid ${v?"#00c853":"#ff4757"}`,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-                    <span style={{color:v?"#00c853":"#ff4757",fontSize:14,fontWeight:700}}>{v?"✓":"✗"}</span>
-                  </div>
-                  <div>
-                    <div style={{fontSize:13,color:"#c8d8f0",fontWeight:500}}>{METRIC_LABELS[k]}</div>
-                    <div style={{fontSize:11,color:"#5a6a8a",marginTop:1}}>{stock.details?.[k]}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            {/* 護城河量化指標（參考用，不計分） */}
-            {(stock.fcf_conv_txt || stock.gm_txt || stock.pe_txt) && (
-              <div style={{marginTop:14}}>
-                <div style={{fontSize:12,color:"#5a6a8a",marginBottom:8,letterSpacing:1}}>── 護城河量化指標（參考）──</div>
-                <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                  {stock.fcf_conv_txt && stock.fcf_conv_txt !== "N/A" && (
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"#080c18",borderRadius:8,border:"1px solid #1e2840"}}>
-                      <div>
-                        <div style={{fontSize:12,color:"#8899bb"}}>💰 FCF 轉換率</div>
-                        <div style={{fontSize:11,color:"#4a5a7a",marginTop:1}}>淨利轉為現金的能力</div>
-                      </div>
-                      <div style={{fontSize:13,color: stock.fcf_conv >= 1 ? "#00c853" : stock.fcf_conv >= 0.7 ? "#f0b90b" : "#ff4757",fontWeight:600,textAlign:"right"}}>
-                        {stock.fcf_conv_txt}
-                      </div>
-                    </div>
-                  )}
-                  {stock.gm_txt && stock.gm_txt !== "N/A" && (
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"#080c18",borderRadius:8,border:"1px solid #1e2840"}}>
-                      <div>
-                        <div style={{fontSize:12,color:"#8899bb"}}>📊 毛利率穩定性</div>
-                        <div style={{fontSize:11,color:"#4a5a7a",marginTop:1}}>σ 越小 = 定價能力越強</div>
-                      </div>
-                      <div style={{fontSize:13,color: stock.std_gm < 3 ? "#00c853" : stock.std_gm < 7 ? "#f0b90b" : "#ff4757",fontWeight:600,textAlign:"right"}}>
-                        {stock.gm_txt}
-                      </div>
-                    </div>
-                  )}
-                  {stock.pe_txt && stock.pe_txt !== "N/A" && (
-                    <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"8px 12px",background:"#080c18",borderRadius:8,border:"1px solid #1e2840"}}>
-                      <div>
-                        <div style={{fontSize:12,color:"#8899bb"}}>📈 估值評估</div>
-                        <div style={{fontSize:11,color:"#4a5a7a",marginTop:1}}>PEG &lt; 1 通常為低估</div>
-                      </div>
-                      <div style={{fontSize:13,color: stock.peg && stock.peg < 1 ? "#00c853" : stock.peg && stock.peg < 2 ? "#f0b90b" : "#ff4757",fontWeight:600,textAlign:"right"}}>
-                        {stock.pe_txt}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Tab: 護城河 */}
-        {activeTab==="moat" && (
-          <div>
-            <div style={{fontSize:13,color:"#8899bb",marginBottom:12}}>勾選符合的護城河類型</div>
-            <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:14}}>
-              {MOAT_TYPES.map(m=>(
-                <button key={m.id} onClick={()=>toggleMoat(m.id)}
-                  style={{background:moats.includes(m.id)?"#f0b90b18":"transparent",border:`1.5px solid ${moats.includes(m.id)?"#f0b90b":"#2a3a58"}`,borderRadius:8,padding:"7px 13px",color:moats.includes(m.id)?"#f0b90b":"#6a8ab8",fontSize:13,fontWeight:500,cursor:"pointer",transition:"all 0.2s"}}>
-                  {m.icon} {m.label}
-                </button>
-              ))}
-            </div>
-            <div style={{display:"flex",gap:8,marginBottom:14}}>
-              {[0,1,2,3].map(v=>(
-                <button key={v} onClick={()=>setMoatScore(v)}
-                  style={{flex:1,padding:"12px 0",background:moatScore===v?moatColors[v]+"25":"#080c18",border:`2px solid ${moatScore===v?moatColors[v]:"#1e2840"}`,borderRadius:8,color:moatScore===v?moatColors[v]:"#4a5a7a",fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:22,cursor:"pointer",transition:"all 0.2s"}}>
-                  {v}
-                  <div style={{fontSize:11,fontFamily:"'Noto Sans TC',sans-serif",fontWeight:400,marginTop:2,color:moatScore===v?moatColors[v]+"cc":"#3a4a6a"}}>{moatLabels[v]}</div>
-                </button>
-              ))}
-            </div>
-            <button onClick={()=>{onMoatUpdate(stock.ticker,moatScore,moats);setMoatSaved(true);setTimeout(()=>setMoatSaved(false),2500);}}
-              style={{width:"100%",padding:"13px 0",background:moatSaved?"#00c853":"linear-gradient(135deg,#f0b90b,#d4941a)",border:"none",borderRadius:8,color:"#080c18",fontWeight:700,fontSize:15,cursor:"pointer",transition:"background 0.3s"}}>
-              {moatSaved?"✓ 已儲存！可繼續操作其他功能":"儲存護城河評分"}
-            </button>
-          </div>
-        )}
-
-        {/* Tab: 合理價 */}
-        {activeTab==="fair" && <FairValueCalc stock={stock} />}
-
-        {/* Tab: 公司簡介 */}
-        {activeTab==="info" && (
-          <div>
-            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:14}}>
-              {[["市值",fmtCap(stock.market_cap,market)],["現價",stock.price?`$${stock.price}`:"N/A"]].map(([k,v])=>(
-                <div key={k} style={{background:"#080c18",borderRadius:7,padding:"10px 14px"}}>
-                  <div style={{fontSize:12,color:"#4a5a7a",marginBottom:3}}>{k}</div>
-                  <div style={{fontSize:15,color:"#c8d8f0",fontWeight:500}}>{v}</div>
-                </div>
-              ))}
-            </div>
-            {stock.summary && (
-              <div style={{background:"#080c18",borderRadius:8,padding:14}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                  <div style={{fontSize:13,color:"#8899bb",fontWeight:500}}>業務簡介</div>
-                  {translating && <div style={{fontSize:11,color:"#4a8aff"}}>翻譯中...</div>}
-                </div>
-                <div style={{fontSize:13,color:"#c0d0e8",lineHeight:1.9}}>{translated||stock.summary}</div>
-              </div>
-            )}
-          </div>
-        )}
-
-        <div style={{marginTop:16,textAlign:"right"}}>
-          <button onClick={onClose} style={{padding:"10px 22px",background:"none",border:"1px solid #2a3a58",borderRadius:8,color:"#6a8ab8",fontSize:14,cursor:"pointer"}}>關閉</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── 估值燈號計算 ──────────────────────────────────────────────────────────
-function calcValLight(stock) {
-  const saved = loadFairData()[stock.ticker];
-  if (!saved || !saved.type) return null;
-
-  const price = stock.price || 0;
-  if (!price) return null;
-
-  const type = saved.type;
-
-  if (type === "growth") {
-    // 成長股：3個合理價（3yr/5yr/10yr），取有效的
-    const eps = parseFloat(saved.eps) || 0;
-    const fvs = [
-      saved.g3  ? eps * parseFloat(saved.g3)  : null,
-      saved.g5  ? eps * parseFloat(saved.g5)  : null,
-      saved.g10 ? eps * parseFloat(saved.g10) : null,
-    ].filter(v => v && v > 0);
-    if (fvs.length === 0) return null;
-    const minFV = Math.min(...fvs);
-    const maxFV = Math.max(...fvs);
-    if (price < minFV)  return "green";
-    if (price <= maxFV) return "yellow";
-    return "red";
-  }
-
-  if (type === "dividend") {
-    // 股息股：合理價 = 年股息 × 25
-    const div = parseFloat(saved.div) || 0;
-    if (!div) return null;
-    const fv = div * 25;
-    if (price < fv)          return "green";
-    if (price <= fv * 1.1)   return "yellow";
-    return "red";
-  }
-
-  if (type === "asset") {
-    // 資產股：合理價 = BVPS × 0.8，黃燈區間 0.8x ~ 1.2x BVPS
-    const bvps = parseFloat(saved.bvps) || 0;
-    if (!bvps) return null;
-    if (price < bvps * 0.8)  return "green";
-    if (price <= bvps * 1.2) return "yellow";
-    return "red";
-  }
-  return null;
-}
-
-const VAL_LIGHT = {
-  green:  { color:"#00c853", bg:"#00c85322", label:"低估" },
-  yellow: { color:"#f0b90b", bg:"#f0b90b22", label:"合理" },
-  red:    { color:"#ff4757", bg:"#ff475722", label:"高估" },
-};
-
-function ValLight({ stock }) {
-  const light = calcValLight(stock);
-  if (!light) return null;
-  const { color, bg, label } = VAL_LIGHT[light];
-  return (
-    <div title={`估值：${label}`} style={{
-      width:28, height:28, borderRadius:"50%",
-      background: bg, border: `2px solid ${color}`,
-      display:"flex", alignItems:"center", justifyContent:"center",
-      flexShrink:0, fontSize:10, color, fontWeight:700,
-    }}>
-      {light==="green"?"🟢":light==="yellow"?"🟡":"🔴"}
-    </div>
-  );
-}
-
-// ── 股票列表卡片 ──────────────────────────────────────────────────────────
-function StockRow({ stock, market, onSelect, isWatched }) {
-  const total=(stock.fin_score||0)+(stock.moat_score||0);
-  return (
-    <div className="stock-row" onClick={()=>onSelect(stock)}
-      style={{background:"#0d1120",border:`1px solid ${FC(stock.fin_score)}30`,borderRadius:12,padding:"14px 18px",display:"flex",alignItems:"center",gap:14,marginBottom:10}}>
-      <div style={{width:54,height:54,borderRadius:11,background:FB(stock.fin_score),border:`2px solid ${FC(stock.fin_score)}66`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0}}>
-        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:24,color:FC(stock.fin_score),lineHeight:1}}>{stock.fin_score}</div>
-        <div style={{fontSize:10,color:"#4a5a7a",marginTop:1}}>/6</div>
-      </div>
-      <div style={{flex:1,minWidth:0}}>
-        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:5}}>
-          <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:800,fontSize:19,color:"#ffffff"}}>{stock.ticker.replace(".TW","").replace(".TWO","")}</span>
-          {isWatched&&<span style={{fontSize:14,color:"#f0b90b"}}>★</span>}
-          <span style={{fontSize:14,color:"#c0d0e8",fontWeight:500,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{stock.name}</span>
-        </div>
-        <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:7}}>
-          <span style={{fontSize:12,color:"#f0b90b",background:"#f0b90b15",padding:"2px 8px",borderRadius:4,fontWeight:500}}>{stock.sector}</span>
-          <span style={{fontSize:12,color:"#5a7a9a"}}>{fmtCap(stock.market_cap,market)}</span>
-          {stock.price>0&&<span style={{fontSize:12,color:"#5a7a9a"}}>${stock.price}</span>}
-        </div>
-        <div style={{display:"flex",gap:3}}>
-          {Object.entries(stock.scores||{}).map(([k,v])=>(
-            <div key={k} title={METRIC_LABELS[k]} style={{flex:1,height:4,borderRadius:2,background:v?FC(stock.fin_score):"#1e2840"}} />
-          ))}
-        </div>
-      </div>
-      <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6,flexShrink:0}}>
-        <ValLight stock={stock} />
-        {stock.moat_score>0&&<div style={{fontSize:12,color:"#f0b90b"}}>護城河 +{stock.moat_score}</div>}
-        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:16,color:total>=7?"#00c853":"#4a5a7a"}}>{total>=7?`${total} ✦`:`總 ${total}`}</div>
-        <div style={{fontSize:11,color:"#3a4a6a"}}>點擊查看</div>
       </div>
     </div>
   );
