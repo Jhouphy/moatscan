@@ -500,6 +500,501 @@ function WatchlistPage({ watchlist, twStocks, usStocks, onSelect, onRemove }) {
   );
 }
 
+
+// ── 合理價計算區塊 ────────────────────────────────────────────────────────
+const LS_FAIR = "moatscan_fairval_v1";
+const loadFairData = () => { try { return JSON.parse(localStorage.getItem(LS_FAIR)||"{}"); } catch { return {}; } };
+const saveFairData = (ticker, data) => {
+  try {
+    const all = loadFairData();
+    all[ticker] = data;
+    localStorage.setItem(LS_FAIR, JSON.stringify(all));
+  } catch {}
+};
+
+function calcFairValue(type, inputs) {
+  const eps  = parseFloat(inputs.eps)  || 0;
+  const g3   = parseFloat(inputs.g3)   || 0;
+  const g5   = parseFloat(inputs.g5)   || 0;
+  const g10  = parseFloat(inputs.g10)  || 0;
+  const div  = parseFloat(inputs.div)  || 0;
+  const bvps = parseFloat(inputs.bvps) || 0;
+  if (type === "growth") {
+    const fv3  = g3  ? eps * (1 + g3/100)**3  : null;
+    const fv5  = g5  ? eps * (1 + g5/100)**5  : null;
+    const fv10 = g10 ? eps * (1 + g10/100)**10 : null;
+    return { fv3, fv5, fv10 };
+  }
+  if (type === "dividend") return { fv: div > 0 ? div * 25 : null };
+  if (type === "asset")    return { fv: bvps > 0 ? bvps * 0.8 : null };
+  return {};
+}
+
+function PriceTag({ label, fv, price }) {
+  if (!fv) return null;
+  const pct = price ? ((price - fv) / fv * 100) : null;
+  return (
+    <div style={{display:"inline-flex",flexDirection:"column",alignItems:"center",
+      background:"#080c18",border:"1px solid #2a3a58",borderRadius:10,padding:"10px 16px",minWidth:110}}>
+      <div style={{fontSize:11,color:"#6a8ab8",marginBottom:4}}>{label}</div>
+      <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:22,color:"#f0b90b"}}>
+        {fmt$(fv)}
+      </div>
+      {pct!=null&&<div style={{fontSize:11,color:pct>0?"#ff4757":"#00c853",marginTop:3}}>
+        {pct>0?"高估 +":"低估 "}{Math.abs(pct).toFixed(1)}%
+      </div>}
+    </div>
+  );
+}
+
+function FairValueCalc({ stock }) {
+  const autoEps = useMemo(()=>{
+    if (stock.eps_current != null) return String(stock.eps_current);
+    const raw = stock.details?.eps || "";
+    const m = raw.match(/[\$]?([\d.]+)/);
+    return m ? m[1] : "";
+  },[stock]);
+
+  const saved = useMemo(()=>loadFairData()[stock.ticker]||{}, [stock.ticker]);
+  const [type, setType]     = useState(saved.type || null);
+  const [inputs, setInputs] = useState({
+    eps:  saved.eps  ?? autoEps,
+    g3:   saved.g3   ?? (stock.eps_g3  != null ? String(stock.eps_g3)  : ""),
+    g5:   saved.g5   ?? (stock.eps_g5  != null ? String(stock.eps_g5)  : ""),
+    g10:  saved.g10  ?? "",
+    div:  saved.div  ?? (stock.div_rate != null ? String(stock.div_rate) : ""),
+    bvps: saved.bvps ?? (stock.bvps    != null ? String(stock.bvps)    : ""),
+  });
+  const [fairSaved, setFairSaved] = useState(false);
+  const setI = (k,v) => setInputs(p=>({...p,[k]:v}));
+
+  const result = type ? calcFairValue(type, inputs) : null;
+  const price  = stock.price || 0;
+
+  const autoStyle = (key) => ({
+    width:"100%", background:"#0d1120",
+    border:`1px solid ${inputs[key] ? "#f0b90b55" : "#1e2840"}`,
+    borderRadius:6, padding:"8px 12px", color:"#e8f0ff", fontSize:14,
+  });
+
+  const handleSaveFair = () => {
+    saveFairData(stock.ticker, { type, ...inputs });
+    setFairSaved(true);
+    setTimeout(()=>setFairSaved(false), 2500);
+  };
+
+  const sbUrl = stock.ticker.includes(".TW") || stock.ticker.includes(".TWO")
+    ? `https://www.stockboss.io/symbol/TPE:${stock.ticker.replace(".TW","").replace(".TWO","")}`
+    : `https://www.stockboss.io/symbol/${stock.ticker}`;
+
+  return (
+    <div>
+      <div style={{fontSize:13,color:"#8899bb",marginBottom:12}}>選擇股票類型以計算合理價</div>
+      <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:16}}>
+        {[["growth","📈 成長股","EPS × 成長率^年數"],["dividend","💰 股息股","年股息 × 25"],["asset","🏦 資產股","BVPS × 0.8"]].map(([id,label,desc])=>(
+          <button key={id} className={`type-btn ${type===id?"active":""}`} onClick={()=>setType(id)}>
+            <div style={{fontWeight:600}}>{label}</div>
+            <div style={{fontSize:11,opacity:0.7,marginTop:2}}>{desc}</div>
+          </button>
+        ))}
+      </div>
+
+      {/* 成長股 */}
+      {type==="growth" && (
+        <div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
+            <div>
+              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>目前 EPS（元）</div>
+              <input type="number" value={inputs.eps} onChange={e=>setI("eps",e.target.value)} placeholder="例：42.3" style={autoStyle("eps")} />
+              {inputs.eps&&<div style={{fontSize:10,color:"#f0b90b",marginTop:3}}>✓ 自動帶入，可修改</div>}
+            </div>
+            <div>
+              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>
+                3年成長率（%）
+                <a href={sbUrl} target="_blank" rel="noreferrer" style={{color:"#4a8aff",marginLeft:6,fontSize:10}}>查10年↗</a>
+              </div>
+              <input type="number" value={inputs.g3} onChange={e=>setI("g3",e.target.value)} placeholder="例：15" style={autoStyle("g3")} />
+              {inputs.g3&&<div style={{fontSize:10,color:"#f0b90b",marginTop:3}}>✓ 自動帶入，可修改</div>}
+            </div>
+            <div>
+              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>5年成長率（%）</div>
+              <input type="number" value={inputs.g5} onChange={e=>setI("g5",e.target.value)} placeholder="例：12" style={autoStyle("g5")} />
+              {inputs.g5&&<div style={{fontSize:10,color:"#f0b90b",marginTop:3}}>✓ 自動帶入，可修改</div>}
+            </div>
+            <div>
+              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>10年成長率（%）</div>
+              <input type="number" value={inputs.g10} onChange={e=>setI("g10",e.target.value)} placeholder="例：10" style={autoStyle("g10")} />
+            </div>
+          </div>
+          <div style={{display:"flex",gap:10,flexWrap:"wrap",marginBottom:12}}>
+            {result?.fv3  && <PriceTag label="3年合理價"  fv={result.fv3}  price={price} />}
+            {result?.fv5  && <PriceTag label="5年合理價"  fv={result.fv5}  price={price} />}
+            {result?.fv10 && <PriceTag label="10年合理價" fv={result.fv10} price={price} />}
+          </div>
+        </div>
+      )}
+
+      {/* 股息股 */}
+      {type==="dividend" && (
+        <div>
+          <div style={{maxWidth:260,marginBottom:12}}>
+            <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>年度股息（元/股）</div>
+            <input type="number" value={inputs.div} onChange={e=>setI("div",e.target.value)} placeholder="例：3.5" style={autoStyle("div")} />
+            {inputs.div?<div style={{fontSize:10,color:"#f0b90b",marginTop:3}}>✓ 自動帶入，可修改</div>
+              :<div style={{fontSize:10,color:"#4a5a7a",marginTop:3}}>請手動輸入年度股息</div>}
+            <div style={{fontSize:11,color:"#4a5a7a",marginTop:5}}>公式：年股息 × 25（以4%殖利率估算）</div>
+          </div>
+          {result?.fv && <PriceTag label="股息股合理價" fv={result.fv} price={price} />}
+        </div>
+      )}
+
+      {/* 資產股 */}
+      {type==="asset" && (
+        <div>
+          <div style={{maxWidth:260,marginBottom:12}}>
+            <div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>每股淨值 Book Value Per Share（元）</div>
+            <input type="number" value={inputs.bvps} onChange={e=>setI("bvps",e.target.value)} placeholder="例：120.5" style={autoStyle("bvps")} />
+            {inputs.bvps?<div style={{fontSize:10,color:"#f0b90b",marginTop:3}}>✓ 自動帶入，可修改</div>
+              :<div style={{fontSize:10,color:"#4a5a7a",marginTop:3}}>請手動輸入每股淨值</div>}
+            <div style={{fontSize:11,color:"#4a5a7a",marginTop:5}}>公式：每股淨值 × 0.8</div>
+          </div>
+          {result?.fv && <PriceTag label="資產股合理價" fv={result.fv} price={price} />}
+        </div>
+      )}
+
+      {type && (
+        <button onClick={handleSaveFair}
+          style={{marginTop:14,padding:"8px 20px",background:fairSaved?"#00c85320":"#1e2840",
+            border:`1px solid ${fairSaved?"#00c853":"#2a3a58"}`,borderRadius:8,
+            color:fairSaved?"#00c853":"#8899bb",fontSize:13,cursor:"pointer",transition:"all 0.3s"}}>
+          {fairSaved ? "✓ 已儲存！下次開啟自動帶入" : "💾 儲存合理價設定"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ── 估值燈號 ──────────────────────────────────────────────────────────────
+function calcValLight(stock) {
+  const saved = loadFairData()[stock.ticker];
+  if (!saved || !saved.type) return null;
+  const price = stock.price || 0;
+  if (!price) return null;
+  const type = saved.type;
+  if (type === "growth") {
+    const eps = parseFloat(saved.eps) || 0;
+    const fvs = [
+      saved.g3  ? eps * (1 + parseFloat(saved.g3)/100)**3   : null,
+      saved.g5  ? eps * (1 + parseFloat(saved.g5)/100)**5   : null,
+      saved.g10 ? eps * (1 + parseFloat(saved.g10)/100)**10 : null,
+    ].filter(v => v && v > 0);
+    if (!fvs.length) return null;
+    const minFV = Math.min(...fvs), maxFV = Math.max(...fvs);
+    if (price < minFV)  return "green";
+    if (price <= maxFV) return "yellow";
+    return "red";
+  }
+  if (type === "dividend") {
+    const div = parseFloat(saved.div) || 0;
+    if (!div) return null;
+    const fv = div * 25;
+    if (price < fv)        return "green";
+    if (price <= fv * 1.1) return "yellow";
+    return "red";
+  }
+  if (type === "asset") {
+    const bvps = parseFloat(saved.bvps) || 0;
+    if (!bvps) return null;
+    if (price < bvps * 0.8)  return "green";
+    if (price <= bvps * 1.2) return "yellow";
+    return "red";
+  }
+  return null;
+}
+const VAL_LIGHT_CFG = {
+  green:  { emoji:"🟢", label:"低估" },
+  yellow: { emoji:"🟡", label:"合理" },
+  red:    { emoji:"🔴", label:"高估" },
+};
+function ValLight({ stock }) {
+  const light = calcValLight(stock);
+  if (!light) return null;
+  const { emoji, label } = VAL_LIGHT_CFG[light];
+  return (
+    <div title={`估值：${label}`} style={{fontSize:18,lineHeight:1,flexShrink:0}}>
+      {emoji}
+    </div>
+  );
+}
+
+// ── 股票列表卡片 ──────────────────────────────────────────────────────────
+function StockRow({ stock, market, onSelect, isWatched }) {
+  const total = (stock.fin_score||0) + (stock.moat_score||0);
+  return (
+    <div className="stock-row" onClick={()=>onSelect(stock)}
+      style={{background:"#0d1120",border:`1px solid ${FC(stock.fin_score)}30`,borderRadius:12,
+        padding:"14px 18px",display:"flex",alignItems:"center",gap:14,marginBottom:10}}>
+      <div style={{width:54,height:54,borderRadius:11,background:FB(stock.fin_score),
+        border:`2px solid ${FC(stock.fin_score)}66`,display:"flex",flexDirection:"column",
+        alignItems:"center",justifyContent:"center",flexShrink:0}}>
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:24,
+          color:FC(stock.fin_score),lineHeight:1}}>{stock.fin_score}</div>
+        <div style={{fontSize:10,color:"#4a5a7a",marginTop:1}}>/6</div>
+      </div>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:10,marginBottom:5}}>
+          <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:800,fontSize:19,
+            color:"#ffffff"}}>{stock.ticker.replace(".TW","").replace(".TWO","")}</span>
+          {isWatched&&<span style={{fontSize:14,color:"#f0b90b"}}>★</span>}
+          <span style={{fontSize:14,color:"#c0d0e8",fontWeight:500,overflow:"hidden",
+            textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{stock.name}</span>
+        </div>
+        <div style={{display:"flex",gap:7,flexWrap:"wrap",marginBottom:7}}>
+          <span style={{fontSize:12,color:"#f0b90b",background:"#f0b90b15",padding:"2px 8px",
+            borderRadius:4,fontWeight:500}}>{stock.sector}</span>
+          <span style={{fontSize:12,color:"#5a7a9a"}}>{fmtCap(stock.market_cap,market)}</span>
+          {stock.price>0&&<span style={{fontSize:12,color:"#5a7a9a"}}>${stock.price}</span>}
+        </div>
+        <div style={{display:"flex",gap:3}}>
+          {Object.entries(stock.scores||{}).map(([k,v])=>(
+            <div key={k} title={METRIC_LABELS[k]}
+              style={{flex:1,height:4,borderRadius:2,background:v?FC(stock.fin_score):"#1e2840"}} />
+          ))}
+        </div>
+      </div>
+      <div style={{display:"flex",flexDirection:"column",alignItems:"flex-end",gap:6,flexShrink:0}}>
+        <ValLight stock={stock} />
+        {stock.moat_score>0&&<div style={{fontSize:12,color:"#f0b90b"}}>護城河 +{stock.moat_score}</div>}
+        <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:16,
+          color:total>=7?"#00c853":"#4a5a7a"}}>{total>=7?`${total} ✦`:`總 ${total}`}</div>
+        <div style={{fontSize:11,color:"#3a4a6a"}}>點擊查看</div>
+      </div>
+    </div>
+  );
+}
+
+// ── 公司詳情彈窗 ──────────────────────────────────────────────────────────
+const MOAT_COLORS = ["#4a5a7a","#ff8c42","#ffd600","#00c853"];
+const MOAT_LABELS = ["無護城河","弱護城河","中等護城河","強護城河"];
+
+function CompanyModal({ stock, market, onClose, onMoatUpdate, watchlist, onWatchToggle }) {
+  const [activeTab,  setActiveTab]  = useState("score");
+  const [moats,      setMoats]      = useState([]);
+  const [moatScore,  setMoatScore]  = useState(stock.moat_score||0);
+  const [moatSaved,  setMoatSaved]  = useState(false);
+  const [translating,setTranslating]= useState(false);
+  const [translated, setTranslated] = useState("");
+
+  const price   = stock.price || 0;
+  const isWatch = watchlist.includes(stock.ticker);
+
+  const sbUrl = stock.ticker.includes(".TW") || stock.ticker.includes(".TWO")
+    ? `https://www.stockboss.io/symbol/TPE:${stock.ticker.replace(".TW","").replace(".TWO","")}`
+    : `https://www.stockboss.io/symbol/${stock.ticker}`;
+
+  const translate = async () => {
+    if (!stock.summary || translated) return;
+    setTranslating(true);
+    try {
+      const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=en&tl=zh-TW&dt=t&q=${encodeURIComponent(stock.summary)}`;
+      const r = await fetch(url);
+      const j = await r.json();
+      setTranslated(j[0].map(s=>s[0]).join(""));
+    } catch { setTranslated("（翻譯失敗，請查看原文）"); }
+    finally { setTranslating(false); }
+  };
+
+  useEffect(()=>{ if(stock.summary) translate(); }, [stock.ticker]);
+
+  const toggleMoat = id => setMoats(p => p.includes(id) ? p.filter(x=>x!==id) : [...p,id]);
+
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",
+      zIndex:500,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#0d1120",border:"1px solid #1e2840",
+        borderRadius:16,width:"100%",maxWidth:520,maxHeight:"90vh",overflowY:"auto"}} className="fade">
+
+        {/* 股票 Header */}
+        <div style={{padding:"20px 24px 0",borderBottom:"1px solid #1e2840"}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:10}}>
+            <div>
+              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:28,
+                  color:"#ffffff"}}>{stock.ticker.replace(".TW","").replace(".TWO","")}</span>
+                <button className="watch-btn" onClick={()=>onWatchToggle(stock.ticker)}
+                  style={{background:isWatch?"#f0b90b18":"none",border:`1.5px solid ${isWatch?"#f0b90b":"#2a3a58"}`,
+                    borderRadius:7,padding:"4px 10px",color:isWatch?"#f0b90b":"#4a5a7a",fontSize:13,cursor:"pointer"}}>
+                  {isWatch ? "★ 已追蹤" : "☆ 加入觀察"}
+                </button>
+              </div>
+              <div style={{color:"#c8d8f0",fontSize:16,fontWeight:500,marginBottom:6}}>{stock.name}</div>
+              <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
+                <span style={{fontSize:12,color:"#f0b90b",background:"#f0b90b15",padding:"2px 8px",borderRadius:4}}>{stock.sector}</span>
+                <span style={{fontSize:12,color:"#6a8ab8"}}>{stock.industry}</span>
+              </div>
+            </div>
+            <button onClick={onClose} style={{background:"none",border:"none",color:"#4a5a7a",fontSize:22,cursor:"pointer",padding:4}}>✕</button>
+          </div>
+          <div style={{display:"flex",gap:20,marginBottom:14,flexWrap:"wrap"}}>
+            {[["市值",fmtCap(stock.market_cap,market)],["現價",stock.price?`$${stock.price}`:"N/A"],
+              ["EPS",stock.eps_current?`$${stock.eps_current}`:"N/A"],
+              ["3年EPS成長",stock.eps_g3!=null?`${stock.eps_g3}%`:"N/A"],
+            ].map(([k,v])=>(
+              <div key={k}>
+                <div style={{fontSize:11,color:"#4a5a7a"}}>{k}</div>
+                <div style={{fontSize:14,color:"#c8d8f0",fontWeight:500}}>{v}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Tabs */}
+          <div style={{display:"flex",gap:0}}>
+            {[["score","財務評分"],["moat","護城河"],["fair","合理價"],["info","公司簡介"]].map(([id,lb])=>(
+              <button key={id} className={`tab-btn ${activeTab===id?"active":""}`}
+                onClick={()=>setActiveTab(id)}>{lb}</button>
+            ))}
+          </div>
+        </div>
+
+        <div style={{padding:"20px 24px"}}>
+
+          {/* 財務評分 Tab */}
+          {activeTab==="score" && (
+            <div>
+              <div style={{fontSize:13,color:"#8899bb",marginBottom:12}}>財務指標　{stock.fin_score}/6 分</div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8}}>
+                {Object.entries(stock.scores||{}).map(([k,v])=>(
+                  <div key={k} style={{display:"flex",alignItems:"center",gap:8,padding:"9px 12px",
+                    background:"#080c18",borderRadius:8,border:`1px solid ${v?"#00c85330":"#1e2840"}`}}>
+                    <div style={{width:24,height:24,borderRadius:5,background:v?"#00c85322":"#ff475722",
+                      border:`1.5px solid ${v?"#00c853":"#ff4757"}`,display:"flex",alignItems:"center",
+                      justifyContent:"center",flexShrink:0}}>
+                      <span style={{color:v?"#00c853":"#ff4757",fontSize:14,fontWeight:700}}>{v?"✓":"✗"}</span>
+                    </div>
+                    <div>
+                      <div style={{fontSize:13,color:"#c8d8f0",fontWeight:500}}>{METRIC_LABELS[k]}</div>
+                      <div style={{fontSize:11,color:"#5a6a8a",marginTop:1}}>{stock.details?.[k]}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {(stock.fcf_conv_txt || stock.gm_txt || stock.pe_txt) && (
+                <div style={{marginTop:14}}>
+                  <div style={{fontSize:12,color:"#5a6a8a",marginBottom:8}}>── 護城河量化指標（參考）──</div>
+                  <div style={{display:"flex",flexDirection:"column",gap:6}}>
+                    {stock.fcf_conv_txt && stock.fcf_conv_txt !== "N/A" && (
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                        padding:"8px 12px",background:"#080c18",borderRadius:8,border:"1px solid #1e2840"}}>
+                        <div>
+                          <div style={{fontSize:12,color:"#8899bb"}}>💰 FCF 轉換率</div>
+                          <div style={{fontSize:11,color:"#4a5a7a",marginTop:1}}>淨利轉為現金的能力</div>
+                        </div>
+                        <div style={{fontSize:13,fontWeight:600,textAlign:"right",
+                          color:stock.fcf_conv>=1?"#00c853":stock.fcf_conv>=0.7?"#f0b90b":"#ff4757"}}>
+                          {stock.fcf_conv_txt}
+                        </div>
+                      </div>
+                    )}
+                    {stock.gm_txt && stock.gm_txt !== "N/A" && (
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                        padding:"8px 12px",background:"#080c18",borderRadius:8,border:"1px solid #1e2840"}}>
+                        <div>
+                          <div style={{fontSize:12,color:"#8899bb"}}>📊 毛利率穩定性</div>
+                          <div style={{fontSize:11,color:"#4a5a7a",marginTop:1}}>σ 越小 = 定價能力越強</div>
+                        </div>
+                        <div style={{fontSize:13,fontWeight:600,textAlign:"right",
+                          color:stock.std_gm<3?"#00c853":stock.std_gm<7?"#f0b90b":"#ff4757"}}>
+                          {stock.gm_txt}
+                        </div>
+                      </div>
+                    )}
+                    {stock.pe_txt && stock.pe_txt !== "N/A" && (
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",
+                        padding:"8px 12px",background:"#080c18",borderRadius:8,border:"1px solid #1e2840"}}>
+                        <div>
+                          <div style={{fontSize:12,color:"#8899bb"}}>📈 估值評估</div>
+                          <div style={{fontSize:11,color:"#4a5a7a",marginTop:1}}>PEG &lt; 1 通常為低估</div>
+                        </div>
+                        <div style={{fontSize:13,fontWeight:600,textAlign:"right",
+                          color:stock.peg&&stock.peg<1?"#00c853":stock.peg&&stock.peg<2?"#f0b90b":"#ff4757"}}>
+                          {stock.pe_txt}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* 護城河 Tab */}
+          {activeTab==="moat" && (
+            <div>
+              <div style={{fontSize:13,color:"#8899bb",marginBottom:12}}>勾選符合的護城河類型</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:14}}>
+                {MOAT_TYPES.map(m=>(
+                  <button key={m.id} onClick={()=>toggleMoat(m.id)}
+                    style={{background:moats.includes(m.id)?"#f0b90b18":"transparent",
+                      border:`1.5px solid ${moats.includes(m.id)?"#f0b90b":"#2a3a58"}`,
+                      borderRadius:8,padding:"7px 13px",
+                      color:moats.includes(m.id)?"#f0b90b":"#6a8ab8",
+                      fontSize:13,fontWeight:500,cursor:"pointer",transition:"all 0.2s"}}>
+                    {m.icon} {m.label}
+                  </button>
+                ))}
+              </div>
+              <div style={{display:"flex",gap:8,marginBottom:14}}>
+                {[0,1,2,3].map(v=>(
+                  <button key={v} onClick={()=>setMoatScore(v)}
+                    style={{flex:1,padding:"12px 0",background:moatScore===v?MOAT_COLORS[v]+"25":"#080c18",
+                      border:`2px solid ${moatScore===v?MOAT_COLORS[v]:"#1e2840"}`,borderRadius:8,
+                      color:moatScore===v?MOAT_COLORS[v]:"#4a5a7a",
+                      fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:22,
+                      cursor:"pointer",transition:"all 0.2s"}}>
+                    {v}
+                    <div style={{fontSize:11,fontFamily:"'Noto Sans TC',sans-serif",fontWeight:400,
+                      marginTop:2,color:moatScore===v?MOAT_COLORS[v]+"cc":"#3a4a6a"}}>{MOAT_LABELS[v]}</div>
+                  </button>
+                ))}
+              </div>
+              <button onClick={()=>{onMoatUpdate(stock.ticker,moatScore,moats);setMoatSaved(true);setTimeout(()=>setMoatSaved(false),2500);}}
+                style={{width:"100%",padding:"13px 0",
+                  background:moatSaved?"#00c853":"linear-gradient(135deg,#f0b90b,#d4941a)",
+                  border:"none",borderRadius:8,color:"#080c18",fontWeight:700,fontSize:15,
+                  cursor:"pointer",transition:"background 0.3s"}}>
+                {moatSaved ? "✓ 已儲存！" : "儲存護城河評分"}
+              </button>
+            </div>
+          )}
+
+          {/* 合理價 Tab */}
+          {activeTab==="fair" && <FairValueCalc stock={stock} />}
+
+          {/* 公司簡介 Tab */}
+          {activeTab==="info" && (
+            <div>
+              <div style={{fontSize:13,color:"#8899bb",marginBottom:10}}>公司簡介</div>
+              {translating && <div style={{color:"#4a5a7a",fontSize:13}}>翻譯中...</div>}
+              {translated && (
+                <div style={{fontSize:14,color:"#c8d8f0",lineHeight:1.8,marginBottom:12,
+                  background:"#080c18",padding:"12px 14px",borderRadius:8}}>{translated}</div>
+              )}
+              {stock.summary && (
+                <div style={{fontSize:12,color:"#5a6a8a",lineHeight:1.8}}>{stock.summary}</div>
+              )}
+              <a href={sbUrl} target="_blank" rel="noreferrer"
+                style={{display:"inline-block",marginTop:12,fontSize:13,color:"#4a8aff"}}>
+                在 StockBoss 查看更多 ↗
+              </a>
+            </div>
+          )}
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ── 主 App ────────────────────────────────────────────────────────────────
 function App() {
   const [market,setMarket]       = useState("TW");
