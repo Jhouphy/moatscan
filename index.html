@@ -84,9 +84,257 @@ const fmtCap = (v,mkt)=>{
 const fmt$ = v => v==null?"N/A":"$"+v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
 
 // ── localStorage 工具 ─────────────────────────────────────────────────────
-const LS_KEY = "moatscan_watchlist_v1";
+const LS_KEY      = "moatscan_watchlist_v1";
+const LS_SESSION  = "moatscan_session_v1";   // { binId, nickname, pwHash, isPublic }
 const loadWatchlist = () => { try { return JSON.parse(localStorage.getItem(LS_KEY)||"[]"); } catch { return []; } };
 const saveWatchlist = list => { try { localStorage.setItem(LS_KEY, JSON.stringify(list)); } catch {} };
+const loadSession   = () => { try { return JSON.parse(localStorage.getItem(LS_SESSION)||"null"); } catch { return null; } };
+const saveSession   = s  => { try { localStorage.setItem(LS_SESSION, JSON.stringify(s)); } catch {} };
+
+// ── JSONBin API ────────────────────────────────────────────────────────────
+const JBIN_KEY = "$2a$10$8q1eGlnc8z3jKVjS3uTB3u1fp.h5mB1mq.xJXD08NsUZydQCx02im";
+const JBIN_URL = "https://api.jsonbin.io/v3/b";
+
+async function jbinCreate(data, name) {
+  const r = await fetch(JBIN_URL, {
+    method:"POST",
+    headers:{"Content-Type":"application/json","X-Access-Key":JBIN_KEY,"X-Bin-Name":name,"X-Bin-Private":"false"},
+    body: JSON.stringify(data),
+  });
+  const j = await r.json();
+  return j.metadata?.id || null;
+}
+
+async function jbinRead(binId) {
+  const r = await fetch(`${JBIN_URL}/${binId}/latest`, {
+    headers:{"X-Access-Key":JBIN_KEY}
+  });
+  const j = await r.json();
+  return j.record || null;
+}
+
+async function jbinUpdate(binId, data) {
+  await fetch(`${JBIN_URL}/${binId}`, {
+    method:"PUT",
+    headers:{"Content-Type":"application/json","X-Access-Key":JBIN_KEY},
+    body: JSON.stringify(data),
+  });
+}
+
+// 簡易 hash（SHA-256 via Web Crypto）
+async function sha256(str) {
+  if (!str) return "";
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(str));
+  return Array.from(new Uint8Array(buf)).map(b=>b.toString(16).padStart(2,"0")).join("");
+}
+
+// ── 帳號 Modal ─────────────────────────────────────────────────────────────
+function AccountModal({ onClose, session, onLogin, onLogout }) {
+  const [tab, setTab]           = useState(session ? "info" : "login");
+  const [nickname, setNickname] = useState("");
+  const [password, setPassword] = useState("");
+  const [isPublic, setIsPublic] = useState(true);
+  const [binIdInput, setBinId]  = useState("");
+  const [loading, setLoading]   = useState(false);
+  const [msg, setMsg]           = useState("");
+  const [copied, setCopied]     = useState(false);
+
+  const showMsg = (m, isErr=false) => setMsg({ text:m, err:isErr });
+
+  const handleCreate = async () => {
+    if (!nickname.trim()) return showMsg("請輸入暱稱", true);
+    setLoading(true); setMsg("");
+    try {
+      const pwHash = await sha256(password);
+      const initData = {
+        nickname: nickname.trim(),
+        isPublic,
+        pwHash,
+        watchlist: loadWatchlist(),
+        fairval:   loadFairData(),
+        createdAt: new Date().toISOString(),
+      };
+      const binId = await jbinCreate(initData, `moatscan-${nickname.trim()}`);
+      if (!binId) throw new Error("建立失敗");
+      const sess = { binId, nickname: nickname.trim(), pwHash, isPublic };
+      saveSession(sess);
+      onLogin(sess, initData.watchlist, initData.fairval);
+      showMsg("✓ 帳號建立成功！帳號代碼已顯示，請妥善保存");
+      setTab("info");
+    } catch(e) {
+      showMsg("建立失敗：" + e.message, true);
+    } finally { setLoading(false); }
+  };
+
+  const handleLogin = async () => {
+    if (!binIdInput.trim()) return showMsg("請輸入帳號代碼", true);
+    setLoading(true); setMsg("");
+    try {
+      const rec = await jbinRead(binIdInput.trim());
+      if (!rec) throw new Error("找不到此帳號");
+      if (rec.pwHash) {
+        const inputHash = await sha256(password);
+        if (inputHash !== rec.pwHash) throw new Error("密碼錯誤");
+      }
+      const sess = { binId: binIdInput.trim(), nickname: rec.nickname, pwHash: rec.pwHash, isPublic: rec.isPublic };
+      saveSession(sess);
+      onLogin(sess, rec.watchlist || [], rec.fairval || {});
+      showMsg("✓ 登入成功！");
+      setTimeout(onClose, 800);
+    } catch(e) {
+      showMsg(e.message, true);
+    } finally { setLoading(false); }
+  };
+
+  const handleSync = async () => {
+    if (!session) return;
+    setLoading(true); setMsg("");
+    try {
+      await jbinUpdate(session.binId, {
+        ...await jbinRead(session.binId),
+        watchlist: loadWatchlist(),
+        fairval:   loadFairData(),
+        syncedAt:  new Date().toISOString(),
+      });
+      showMsg("✓ 已同步到雲端！");
+    } catch(e) {
+      showMsg("同步失敗：" + e.message, true);
+    } finally { setLoading(false); }
+  };
+
+  const handlePull = async () => {
+    if (!session) return;
+    setLoading(true); setMsg("");
+    try {
+      const rec = await jbinRead(session.binId);
+      if (rec.watchlist) { saveWatchlist(rec.watchlist); onLogin(session, rec.watchlist, rec.fairval||{}); }
+      showMsg("✓ 已從雲端拉取最新資料！");
+    } catch(e) {
+      showMsg("拉取失敗：" + e.message, true);
+    } finally { setLoading(false); }
+  };
+
+  const copyBinId = () => {
+    if (!session) return;
+    navigator.clipboard.writeText(session.binId).then(()=>{ setCopied(true); setTimeout(()=>setCopied(false), 2000); });
+  };
+
+  const inputStyle = { width:"100%", background:"#080c18", border:"1px solid #2a3a58", borderRadius:8,
+    padding:"10px 14px", color:"#e8f0ff", fontSize:14, boxSizing:"border-box" };
+  const btnPrimary = { width:"100%", padding:"12px", background:"linear-gradient(135deg,#f0b90b,#d4941a)",
+    border:"none", borderRadius:8, color:"#080c18", fontWeight:700, fontSize:15, cursor:"pointer" };
+
+  return (
+    <div onClick={onClose} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.88)",zIndex:1000,display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div onClick={e=>e.stopPropagation()} style={{background:"#0d1120",border:"1px solid #2a3a58",borderRadius:16,width:"100%",maxWidth:440,padding:24}}>
+
+        {/* Header */}
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+          <div style={{fontSize:18,fontWeight:700,color:"#e8f0ff"}}>☁️ 雲端帳號</div>
+          <button onClick={onClose} style={{background:"none",border:"none",color:"#4a5a7a",fontSize:20,cursor:"pointer"}}>✕</button>
+        </div>
+
+        {/* Tabs */}
+        {!session && (
+          <div style={{display:"flex",gap:4,marginBottom:20,background:"#080c18",borderRadius:8,padding:4}}>
+            {[["login","登入"],["create","建立帳號"]].map(([id,lb])=>(
+              <button key={id} onClick={()=>setTab(id)}
+                style={{flex:1,padding:"8px 0",background:tab===id?"#1a2540":"transparent",border:"none",borderRadius:6,
+                  color:tab===id?"#e8f0ff":"#4a5a7a",fontSize:14,cursor:"pointer",fontWeight:tab===id?600:400}}>
+                {lb}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {/* 登入 */}
+        {tab==="login" && !session && (
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <div>
+              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:6}}>帳號代碼（建立帳號時取得）</div>
+              <input value={binIdInput} onChange={e=>setBinId(e.target.value)} placeholder="貼上帳號代碼" style={inputStyle} />
+            </div>
+            <div>
+              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:6}}>密碼（若無密碼請留空）</div>
+              <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="輸入密碼" style={inputStyle} />
+            </div>
+            <button onClick={handleLogin} disabled={loading} style={{...btnPrimary, opacity:loading?0.6:1}}>
+              {loading ? "登入中..." : "登入"}
+            </button>
+          </div>
+        )}
+
+        {/* 建立帳號 */}
+        {tab==="create" && !session && (
+          <div style={{display:"flex",flexDirection:"column",gap:12}}>
+            <div>
+              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:6}}>暱稱</div>
+              <input value={nickname} onChange={e=>setNickname(e.target.value)} placeholder="例：老李 / Jhouphy" style={inputStyle} />
+            </div>
+            <div>
+              <div style={{fontSize:12,color:"#6a8ab8",marginBottom:6}}>密碼（可留空，不需要特定格式）</div>
+              <input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="選填" style={inputStyle} />
+            </div>
+            <label style={{display:"flex",alignItems:"center",gap:10,cursor:"pointer"}}>
+              <input type="checkbox" checked={isPublic} onChange={e=>setIsPublic(e.target.checked)} style={{accentColor:"#f0b90b",width:16,height:16}} />
+              <span style={{fontSize:14,color:"#c0d0e8"}}>公開帳號（觀察清單可被他人查看）</span>
+            </label>
+            <div style={{fontSize:12,color:"#4a5a7a",background:"#080c18",borderRadius:8,padding:10}}>
+              💡 建立帳號時，會自動將目前裝置的觀察清單和合理價設定同步到雲端
+            </div>
+            <button onClick={handleCreate} disabled={loading} style={{...btnPrimary, opacity:loading?0.6:1}}>
+              {loading ? "建立中..." : "建立帳號"}
+            </button>
+          </div>
+        )}
+
+        {/* 已登入 - 帳號資訊 */}
+        {session && (
+          <div style={{display:"flex",flexDirection:"column",gap:14}}>
+            <div style={{background:"#080c18",borderRadius:10,padding:14}}>
+              <div style={{fontSize:13,color:"#6a8ab8",marginBottom:4}}>已登入帳號</div>
+              <div style={{fontSize:20,fontWeight:700,color:"#f0b90b"}}>{session.nickname}</div>
+              <div style={{fontSize:12,color:"#4a5a7a",marginTop:4}}>{session.isPublic?"🌐 公開帳號":"🔒 私密帳號"}</div>
+            </div>
+
+            <div style={{background:"#080c18",borderRadius:10,padding:14}}>
+              <div style={{fontSize:13,color:"#6a8ab8",marginBottom:8}}>帳號代碼（在其他裝置登入時使用）</div>
+              <div style={{fontSize:12,color:"#c0d0e8",fontFamily:"monospace",wordBreak:"break-all",marginBottom:8,lineHeight:1.6}}>
+                {session.binId}
+              </div>
+              <button onClick={copyBinId} style={{padding:"6px 14px",background:"#1a2540",border:"1px solid #2a3a58",borderRadius:6,color:"#4a8aff",fontSize:12,cursor:"pointer"}}>
+                {copied ? "✓ 已複製！" : "📋 複製代碼"}
+              </button>
+            </div>
+
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={handleSync} disabled={loading} style={{flex:1,padding:"11px 0",background:"#1a2540",border:"1px solid #2a3a58",borderRadius:8,color:"#4a8aff",fontSize:14,cursor:"pointer",fontWeight:600}}>
+                {loading ? "處理中..." : "⬆️ 上傳到雲端"}
+              </button>
+              <button onClick={handlePull} disabled={loading} style={{flex:1,padding:"11px 0",background:"#1a2540",border:"1px solid #2a3a58",borderRadius:8,color:"#00c853",fontSize:14,cursor:"pointer",fontWeight:600}}>
+                {loading ? "處理中..." : "⬇️ 從雲端拉取"}
+              </button>
+            </div>
+
+            <button onClick={()=>{ onLogout(); onClose(); }}
+              style={{padding:"11px 0",background:"none",border:"1px solid #ff475740",borderRadius:8,color:"#ff4757",fontSize:14,cursor:"pointer"}}>
+              登出
+            </button>
+          </div>
+        )}
+
+        {/* 訊息 */}
+        {msg && (
+          <div style={{marginTop:14,padding:"10px 14px",background:msg.err?"#ff475715":"#00c85315",
+            border:`1px solid ${msg.err?"#ff475740":"#00c85340"}`,borderRadius:8,
+            fontSize:13,color:msg.err?"#ff4757":"#00c853"}}>
+            {msg.text}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
 // ── 合理價計算 ────────────────────────────────────────────────────────────
 function calcFairValue(type, inputs, stock) {
@@ -628,31 +876,56 @@ function StockRow({ stock, market, onSelect, isWatched }) {
 }
 
 // ── 觀察清單頁面 ──────────────────────────────────────────────────────────
-function WatchlistPage({ watchlist, allStocks, market, onSelect, onRemove }) {
-  const watched = allStocks.filter(s=>watchlist.includes(s.ticker));
-  if(watchlist.length===0) return (
+function WatchlistGroup({ label, flag, stocks, watchlist, onSelect, onRemove, mkt }) {
+  if (stocks.length === 0) return null;
+  return (
+    <div style={{marginBottom:24}}>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,paddingBottom:8,borderBottom:"1px solid #1e2840"}}>
+        <span style={{fontSize:18}}>{flag}</span>
+        <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:18,color:"#e8f0ff"}}>{label}</span>
+        <span style={{fontSize:13,color:"#4a5a7a",marginLeft:4}}>{stocks.length} 支</span>
+      </div>
+      {stocks.map(stock=>(
+        <div key={stock.ticker} style={{position:"relative"}}>
+          <StockRow stock={stock} market={mkt} onSelect={onSelect} isWatched={true} />
+          <button onClick={e=>{e.stopPropagation();onRemove(stock.ticker);}}
+            style={{position:"absolute",top:"50%",transform:"translateY(-50%)",right:14,padding:"5px 10px",
+              background:"#ff475720",border:"1px solid #ff475740",borderRadius:6,color:"#ff4757",fontSize:12,cursor:"pointer",zIndex:2}}>
+            移除
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function WatchlistPage({ watchlist, twStocks, usStocks, onSelect, onRemove }) {
+  if (watchlist.length === 0) return (
     <div style={{textAlign:"center",padding:"60px 20px",color:"#3a4a6a"}}>
       <div style={{fontSize:40,marginBottom:16}}>☆</div>
       <div style={{fontSize:16,marginBottom:8,color:"#6a8ab8"}}>觀察清單是空的</div>
       <div style={{fontSize:13}}>在任一股票詳情頁點選「加入觀察」即可追蹤</div>
     </div>
   );
+
+  const allStocks = [...twStocks, ...usStocks];
+  const twWatched = twStocks.filter(s => watchlist.includes(s.ticker));
+  const usWatched = usStocks.filter(s => watchlist.includes(s.ticker));
+  const foundCount = twWatched.length + usWatched.length;
+
   return (
     <div className="fade">
-      <div style={{fontSize:13,color:"#5a7a9a",marginBottom:14}}>
-        追蹤中 <span style={{color:"#f0b90b",fontWeight:600}}>{watchlist.length}</span> 支股票
+      <div style={{fontSize:13,color:"#5a7a9a",marginBottom:18}}>
+        追蹤中 <span style={{color:"#f0b90b",fontWeight:600}}>{watchlist.length}</span> 支
+        {foundCount < watchlist.length &&
+          <span style={{color:"#4a5a7a"}}> （{watchlist.length - foundCount} 支待資料載入）</span>}
       </div>
-      {watched.map(stock=>(
-        <div key={stock.ticker} style={{position:"relative"}}>
-          <StockRow stock={stock} market={market} onSelect={onSelect} isWatched={true} />
-          <button onClick={e=>{e.stopPropagation();onRemove(stock.ticker);}}
-            style={{position:"absolute",top:"50%",transform:"translateY(-50%)",right:14,padding:"5px 10px",background:"#ff475720",border:"1px solid #ff475740",borderRadius:6,color:"#ff4757",fontSize:12,cursor:"pointer",zIndex:2}}>
-            移除
-          </button>
+      <WatchlistGroup label="台股" flag="🇹🇼" stocks={twWatched} watchlist={watchlist} onSelect={onSelect} onRemove={onRemove} mkt="TW" />
+      <WatchlistGroup label="美股" flag="🇺🇸" stocks={usWatched} watchlist={watchlist} onSelect={onSelect} onRemove={onRemove} mkt="US" />
+      {foundCount === 0 && watchlist.length > 0 && (
+        <div style={{textAlign:"center",padding:"30px 0",color:"#4a5a7a",fontSize:13}}>
+          載入資料中，請稍候...
         </div>
-      ))}
-      {watched.length<watchlist.length&&(
-        <div style={{fontSize:12,color:"#4a5a7a",padding:"10px 0"}}>部分追蹤股票不在目前篩選結果中</div>
       )}
     </div>
   );
@@ -662,6 +935,7 @@ function WatchlistPage({ watchlist, allStocks, market, onSelect, onRemove }) {
 function App() {
   const [market,setMarket]       = useState("TW");
   const [data,setData]           = useState(null);
+  const [dataCache,setDataCache] = useState({TW:null,US:null}); // 快取兩個市場
   const [loading,setLoading]     = useState(false);
   const [error,setError]         = useState("");
   const [useDemo,setUseDemo]     = useState(false);
@@ -671,8 +945,10 @@ function App() {
   const [sortBy,setSortBy]       = useState("fin_score");
   const [search,setSearch]       = useState("");
   const [sectorFilter,setSectorFilter] = useState("全部");
-  const [mainTab,setMainTab]     = useState("screen");
-  const [watchlist,setWatchlist] = useState(()=>loadWatchlist());
+  const [mainTab,setMainTab]       = useState("screen");
+  const [watchlist,setWatchlist]   = useState(()=>loadWatchlist());
+  const [session,setSession]       = useState(()=>loadSession());
+  const [showAccount,setShowAccount] = useState(false);
 
   const toggleWatch = ticker => {
     setWatchlist(prev=>{
@@ -682,14 +958,43 @@ function App() {
     });
   };
 
+  const handleLogin = (sess, wl, fv) => {
+    setSession(sess);
+    saveSession(sess);
+    if (wl && wl.length > 0) { setWatchlist(wl); saveWatchlist(wl); }
+    if (fv) { try { localStorage.setItem("moatscan_fairval_v1", JSON.stringify(fv)); } catch {} }
+  };
+
+  const handleLogout = () => {
+    setSession(null);
+    saveSession(null);
+  };
+
   const load = async(mkt,demo)=>{
     setLoading(true);setError("");setData(null);
-    if(demo){await new Promise(r=>setTimeout(r,400));setData(DEMO_DATA[mkt]);setLoading(false);return;}
+    if(demo){
+      await new Promise(r=>setTimeout(r,400));
+      const d=DEMO_DATA[mkt];
+      setData(d);
+      setDataCache(p=>({...p,[mkt]:d}));
+      // 順帶載入另一市場 demo 資料
+      const other=mkt==="TW"?"US":"TW";
+      if(DEMO_DATA[other]) setDataCache(p=>({...p,[other]:DEMO_DATA[other]}));
+      setLoading(false);return;
+    }
     try{
       const res=await fetch(DATA_URLS[mkt]+"?t="+Date.now());
       if(!res.ok)throw new Error("HTTP "+res.status);
-      setData(await res.json());
+      const d=await res.json();
+      setData(d);
+      setDataCache(p=>({...p,[mkt]:d}));
     }catch(e){setError(e.message);}finally{setLoading(false);}
+    // 背景載入另一市場（不影響主畫面 loading）
+    const other=mkt==="TW"?"US":"TW";
+    try{
+      const res2=await fetch(DATA_URLS[other]+"?t="+Date.now());
+      if(res2.ok){ const d2=await res2.json(); setDataCache(p=>({...p,[other]:d2})); }
+    }catch{}
   };
   useEffect(()=>{load(market,useDemo);},[market,useDemo]);
 
@@ -698,6 +1003,16 @@ function App() {
     moat_score: moatMap[r.ticker]?.score??r.moat_score??0,
     total_score:r.fin_score+(moatMap[r.ticker]?.score??r.moat_score??0),
   })),[data,moatMap]);
+
+  // 兩個市場的完整資料（觀察清單用）
+  const twEnriched = useMemo(()=>(dataCache.TW?.results||[]).map(r=>({
+    ...r, moat_score:moatMap[r.ticker]?.score??r.moat_score??0,
+    total_score:r.fin_score+(moatMap[r.ticker]?.score??r.moat_score??0),
+  })),[dataCache.TW,moatMap]);
+  const usEnriched = useMemo(()=>(dataCache.US?.results||[]).map(r=>({
+    ...r, moat_score:moatMap[r.ticker]?.score??r.moat_score??0,
+    total_score:r.fin_score+(moatMap[r.ticker]?.score??r.moat_score??0),
+  })),[dataCache.US,moatMap]);
 
   const sectors = useMemo(()=>["全部",...new Set(enriched.map(r=>r.sector).filter(Boolean))],[enriched]);
 
@@ -743,6 +1058,16 @@ function App() {
               {m==="TW"?"🇹🇼 台股":"🇺🇸 美股"}
             </button>
           ))}
+          {/* 帳號按鈕 */}
+          <button onClick={()=>setShowAccount(true)} title={session?"雲端帳號："+session.nickname:"雲端帳號"}
+            style={{height:34,borderRadius:8,border:`2px solid ${session?"#f0b90b":"#8899bb"}`,
+              background:session?"#f0b90b18":"#1a2540",cursor:"pointer",display:"flex",alignItems:"center",
+              gap:6,padding:"0 12px",flexShrink:0,transition:"all 0.2s"}}>
+            <span style={{fontSize:14}}>☁️</span>
+            <span style={{fontSize:13,fontWeight:600,color:session?"#f0b90b":"#c8d8f0"}}>
+              {session ? session.nickname : "雲端帳號"}
+            </span>
+          </button>
         </div>
       </div>
 
@@ -761,7 +1086,7 @@ function App() {
 
         {/* 觀察清單頁 */}
         {mainTab==="watch" && (
-          <WatchlistPage watchlist={watchlist} allStocks={enriched} market={market} onSelect={setSelected} onRemove={toggleWatch} />
+          <WatchlistPage watchlist={watchlist} twStocks={twEnriched} usStocks={usEnriched} onSelect={setSelected} onRemove={toggleWatch} />
         )}
 
         {/* 選股篩選頁 */}
@@ -833,6 +1158,14 @@ function App() {
         </div>
       </div>
 
+      {showAccount && (
+        <AccountModal
+          session={session}
+          onClose={()=>setShowAccount(false)}
+          onLogin={handleLogin}
+          onLogout={handleLogout}
+        />
+      )}
       {selected && (
         <CompanyModal stock={selected} market={market} onClose={()=>setSelected(null)}
           onMoatUpdate={onMoatUpdate} watchlist={watchlist} onWatchToggle={toggleWatch} />
