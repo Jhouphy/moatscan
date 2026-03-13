@@ -90,6 +90,12 @@ const loadWatchlist = () => { try { return JSON.parse(localStorage.getItem(LS_KE
 const saveWatchlist = list => { try { localStorage.setItem(LS_KEY, JSON.stringify(list)); } catch {} };
 const loadSession   = () => { try { return JSON.parse(localStorage.getItem(LS_SESSION)||"null"); } catch { return null; } };
 const saveSession   = s  => { try { localStorage.setItem(LS_SESSION, JSON.stringify(s)); } catch {} };
+// ── 合理價 localStorage ────────────────────────────────────────────────────
+const LS_FAIR = "moatscan_fairval_v1";
+const loadFairData = () => { try { return JSON.parse(localStorage.getItem(LS_FAIR)||"{}"); } catch { return {}; } };
+const saveFairData = (ticker, data) => {
+  try { const all = loadFairData(); all[ticker] = data; localStorage.setItem(LS_FAIR, JSON.stringify(all)); } catch {}
+};
 
 // ── JSONBin API ────────────────────────────────────────────────────────────
 const JBIN_KEY = "$2a$10$8q1eGlnc8z3jKVjS3uTB3u1fp.h5mB1mq.xJXD08NsUZydQCx02im";
@@ -502,15 +508,6 @@ function WatchlistPage({ watchlist, twStocks, usStocks, onSelect, onRemove }) {
 
 
 // ── 合理價計算區塊 ────────────────────────────────────────────────────────
-const LS_FAIR = "moatscan_fairval_v1";
-const loadFairData = () => { try { return JSON.parse(localStorage.getItem(LS_FAIR)||"{}"); } catch { return {}; } };
-const saveFairData = (ticker, data) => {
-  try {
-    const all = loadFairData();
-    all[ticker] = data;
-    localStorage.setItem(LS_FAIR, JSON.stringify(all));
-  } catch {}
-};
 
 function calcFairValue(type, inputs) {
   const eps  = parseFloat(inputs.eps)  || 0;
