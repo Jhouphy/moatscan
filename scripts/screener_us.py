@@ -42,6 +42,45 @@ FALLBACK_TICKERS = [
     "MELI","SE","JD","PDD","NIO","LI","XPEV",
 ]
 
+# ── 主題關鍵字字典（與 screener_tw.py 共用邏輯）────────────────────────
+THEME_KEYWORDS = {
+    "光通訊":     ["optical transceiver","optical fiber","photonic","fiber optic"],
+    "散熱":       ["thermal management","heat sink","heat pipe","vapor chamber","cooling solution"],
+    "PCB":        ["printed circuit board","pcb substrate","circuit board","multilayer"],
+    "伺服器":     ["server","data center","datacenter","hyperscale","rack server"],
+    "AI/HPC":     ["artificial intelligence","machine learning","gpu computing","high performance computing","hpc"],
+    "車用電子":   ["automotive","electric vehicle"," ev ","adas","vehicle electronics","in-vehicle"],
+    "5G":         ["5g network","5g base station","millimeter wave","mmwave","5g infrastructure"],
+    "IC設計":     ["fabless","ic design","system on chip","soc design","integrated circuit design"],
+    "記憶體":     ["dram","nand flash","memory module","storage memory"],
+    "封測":       ["semiconductor packaging","chip testing","assembly and test","advanced packaging"],
+    "被動元件":   ["capacitor","resistor","inductor","passive component","mlcc"],
+    "網通":       ["networking equipment","ethernet switch","router","wi-fi","wireless lan"],
+    "電商":       ["e-commerce","online retail","marketplace platform","digital commerce"],
+    "金融科技":   ["fintech","digital payment","mobile payment","digital banking"],
+    "生技新藥":   ["drug development","pharmaceutical","clinical trial","fda approval","new drug"],
+    "醫材":       ["medical device","diagnostic equipment","surgical instrument","implantable"],
+    "再生能源":   ["solar energy","wind energy","renewable energy","photovoltaic","energy storage"],
+    "機器人":     ["industrial robot","automation system","servo motor","motion control"],
+    "航太國防":   ["aerospace","defense system","missile","satellite","military"],
+    "電信":       ["telecommunications","mobile network","broadband service","telecom"],
+    "零售/超商":  ["convenience store","supermarket","retail chain","department store"],
+    "食品飲料":   ["food products","beverage","snack food","dairy product"],
+    "金融保險":   ["life insurance","property insurance","bancassurance","insurance products"],
+    "REITs":      ["real estate investment trust","reit","property leasing","rental income"],
+    "雲端運算":   ["cloud computing","cloud service","saas","iaas","cloud platform"],
+    "電動車":     ["electric vehicle","battery electric","ev battery","charging station"],
+    "半導體設備": ["semiconductor equipment","etch","deposition","lithography","wafer processing"],
+    "串流媒體":   ["streaming","subscription video","content platform","digital media"],
+    "社群媒體":   ["social media","social network","user generated","advertising platform"],
+    "支付":       ["payment processing","payment network","card network","merchant acquiring"],
+}
+
+def extract_themes(summary: str, industry: str) -> list:
+    """從公司簡介和產業分類抽取主題標籤"""
+    text = (summary + " " + industry).lower()
+    return [t for t, kws in THEME_KEYWORDS.items() if any(kw in text for kw in kws)]
+
 def get_us_tickers():
     tickers = set()
     print("[INFO] 嘗試從 Wikipedia 取得最新清單...", flush=True)
@@ -202,6 +241,7 @@ def score_ticker(ticker_str, retries=3):
             prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose") or 0
             change_pct = round((price - prev_close) / prev_close * 100, 2) if prev_close and price else None
             summary  = (info.get("longBusinessSummary") or "")[:300]
+            themes   = extract_themes(summary, info.get("industry") or "")
 
             if mkt_cap and mkt_cap < 500_000_000:
                 return None
@@ -326,6 +366,7 @@ def score_ticker(ticker_str, retries=3):
                 "pe_txt":      pe_txt,
                 "updated":     datetime.now().strftime("%Y-%m-%d"),
                 "change_pct":  change_pct,
+                "themes":       themes,
             }
 
         except Exception as e:
