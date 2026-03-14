@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<title>MoatScan 熱力圖</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&family=Barlow+Condensed:wght@700;900&display=swap" rel="stylesheet">
+<style>
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:#080c18;color:#e8f0ff;font-family:'Noto Sans TC',sans-serif;font-size:14px;}
+  button{cursor:pointer;font-family:'Noto Sans TC',sans-serif;}
+  .mkt-btn{padding:6px 18px;border:1px solid #2a3a58;border-radius:7px;background:none;color:#6a8ab8;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:15px;transition:all 0.2s;}
+  .mkt-btn.on{background:linear-gradient(135deg,#f0b90b,#d4941a);border-color:transparent;color:#080c18;}
+  .mkt-btn:hover:not(.on){background:#1a2540;}
+  #tooltip{position:fixed;background:#0d1120;border:1px solid #2a3a58;border-radius:10px;padding:12px 16px;font-size:12px;pointer-events:none;display:none;z-index:100;min-width:160px;color:#e8f0ff;box-shadow:0 4px 20px rgba(0,0,0,0.5);}
+</style>
+</head>
+<body>
+<div style="max-width:1200px;margin:0 auto;padding:20px 16px;">
+
+  <!-- Header -->
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:12px;">
+    <div style="display:flex;align-items:center;gap:14px;">
+      <div style="width:32px;height:32px;background:linear-gradient(135deg,#f0b90b,#d4941a);border-radius:8px;display:flex;align-items:center;justify-content:center;">
+        <span style="color:#080c18;font-size:16px;font-weight:700;">⬡</span>
+      </div>
+      <span style="font-family:'Barlow Condensed',sans-serif;font-weight:900;font-size:22px;letter-spacing:0.1em;">MOAT<span style="color:#f0b90b;">SCAN</span> <span style="font-size:15px;color:#4a5a7a;font-weight:400;letter-spacing:0;">熱力圖</span></span>
+    </div>
+    <a href="index.html" style="font-size:13px;color:#4a8aff;text-decoration:none;">← 回選股篩選</a>
+  </div>
+
+  <!-- Controls -->
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:14px;flex-wrap:wrap;gap:10px;">
+    <div style="display:flex;gap:8px;">
+      <button class="mkt-btn on" id="bTW" onclick="app.mkt('TW')">🇹🇼 台股</button>
+      <button class="mkt-btn" id="bUS" onclick="app.mkt('US')">🇺🇸 美股</button>
+    </div>
+    <div id="breadcrumb" style="font-size:13px;color:#6a8ab8;"></div>
+    <div style="display:flex;gap:14px;font-size:12px;color:#4a5a7a;align-items:center;">
+      <span style="display:flex;align-items:center;gap:5px;"><span style="display:inline-block;width:10px;height:10px;background:#993C1D;border-radius:2px;"></span>上漲</span>
+      <span style="display:flex;align-items:center;gap:5px;"><span style="display:inline-block;width:10px;height:10px;background:#0F6E56;border-radius:2px;"></span>下跌</span>
+      <span style="color:#3a4a6a;">方塊大小 = 市值</span>
+    </div>
+  </div>
+
+  <!-- Canvas -->
+  <div id="mapwrap" style="width:100%;border-radius:10px;overflow:hidden;background:#060a14;">
+    <svg id="map" style="display:block;width:100%;"></svg>
+  </div>
+
+  <div style="display:flex;justify-content:space-between;margin-top:8px;font-size:11px;color:#2a3a58;">
+    <span id="counter"></span>
+    <span id="updated"></span>
+  </div>
+</div>
+
+<div id="tooltip"></div>
+
+<script>
+const DATA_URLS = {
+  TW: "https://raw.githubusercontent.com/Jhouphy/moatscan/main/data/tw_results.json",
+  US: "https://raw.githubusercontent.com/Jhouphy/moatscan/main/data/us_results.json",
+};
+
+// 板塊中文名稱對照（US用）
+const SECTOR_ZH = {
+  "Technology":"科技","Healthcare":"醫療保健","Financial Services":"金融",
+  "Consumer Cyclical":"非必需消費","Consumer Defensive":"必需消費",
+  "Communication Services":"通訊服務","Energy":"能源","Industrials":"工業",
+  "Basic Materials":"基礎材料","Real Estate":"房地產","Utilities":"公用事業",
+  "Financial":"金融","Technology (Semiconductors)":"半導體",
+};
+
+// 示範資料（網路無法讀取 JSON 時使用）
+const DEMO = {
+  TW:{ updated:"示範資料", results:[
+    {ticker:"2330.TW",name:"台積電",sector:"半導體",market_cap:18000000000000,price:910,fin_score:6,change_pct:2.34},
+    {ticker:"2454.TW",name:"聯發科",sector:"半導體",market_cap:1800000000000,price:1150,fin_score:5,change_pct:-1.20},
+    {ticker:"3711.TW",name:"日月光",sector:"半導體",market_cap:800000000000,price:125,fin_score:4,change_pct:0.40},
+    {ticker:"2308.TW",name:"台達電",sector:"電子製造",market_cap:900000000000,price:310,fin_score:5,change_pct:1.10},
+    {ticker:"2317.TW",name:"鴻海",sector:"電子製造",market_cap:1500000000000,price:195,fin_score:4,change_pct:-0.51},
+    {ticker:"2382.TW",name:"廣達",sector:"電子製造",market_cap:800000000000,price:240,fin_score:4,change_pct:3.20},
+    {ticker:"4938.TW",name:"和碩",sector:"電子製造",market_cap:350000000000,price:85,fin_score:3,change_pct:-2.10},
+    {ticker:"2412.TW",name:"中華電信",sector:"通訊服務",market_cap:800000000000,price:117,fin_score:5,change_pct:0.17},
+    {ticker:"3045.TW",name:"台灣大哥大",sector:"通訊服務",market_cap:280000000000,price:100,fin_score:4,change_pct:0.43},
+    {ticker:"2882.TW",name:"國泰金控",sector:"金融",market_cap:1200000000000,price:62,fin_score:4,change_pct:-0.87},
+    {ticker:"2881.TW",name:"富邦金控",sector:"金融",market_cap:1100000000000,price:88,fin_score:4,change_pct:-1.12},
+    {ticker:"2891.TW",name:"中信金控",sector:"金融",market_cap:900000000000,price:33,fin_score:4,change_pct:-0.56},
+    {ticker:"2886.TW",name:"兆豐金控",sector:"金融",market_cap:500000000000,price:38,fin_score:4,change_pct:0.21},
+    {ticker:"2395.TW",name:"研華科技",sector:"工業/自動化",market_cap:500000000000,price:380,fin_score:5,change_pct:0.88},
+    {ticker:"1590.TW",name:"亞德客",sector:"工業/自動化",market_cap:350000000000,price:680,fin_score:5,change_pct:-0.45},
+    {ticker:"2049.TW",name:"上銀科技",sector:"工業/自動化",market_cap:200000000000,price:290,fin_score:4,change_pct:1.23},
+    {ticker:"2912.TW",name:"統一超商",sector:"消費",market_cap:350000000000,price:285,fin_score:5,change_pct:0.34},
+    {ticker:"1216.TW",name:"統一企業",sector:"消費",market_cap:400000000000,price:72,fin_score:4,change_pct:0.12},
+    {ticker:"1788.TW",name:"杏昌醫材",sector:"生技醫療",market_cap:60000000000,price:120,fin_score:4,change_pct:2.34},
+    {ticker:"4105.TW",name:"東洋藥品",sector:"生技醫療",market_cap:80000000000,price:95,fin_score:3,change_pct:-1.23},
+  ]},
+  US:{ updated:"示範資料", results:[
+    {ticker:"AAPL",name:"蘋果",sector:"Technology",market_cap:3200000000000,price:212,fin_score:6,change_pct:-2.21},
+    {ticker:"MSFT",name:"微軟",sector:"Technology",market_cap:2900000000000,price:389,fin_score:6,change_pct:-1.57},
+    {ticker:"NVDA",name:"輝達",sector:"Technology",market_cap:2500000000000,price:850,fin_score:6,change_pct:-1.58},
+    {ticker:"GOOGL",name:"谷歌",sector:"Technology",market_cap:2100000000000,price:175,fin_score:6,change_pct:-0.42},
+    {ticker:"META",name:"Meta",sector:"Technology",market_cap:1400000000000,price:540,fin_score:6,change_pct:-3.83},
+    {ticker:"AVGO",name:"博通",sector:"Technology",market_cap:900000000000,price:195,fin_score:5,change_pct:-4.11},
+    {ticker:"ORCL",name:"甲骨文",sector:"Technology",market_cap:450000000000,price:160,fin_score:5,change_pct:-2.54},
+    {ticker:"ADBE",name:"Adobe",sector:"Technology",market_cap:210000000000,price:470,fin_score:5,change_pct:-7.58},
+    {ticker:"LLY",name:"禮來",sector:"Healthcare",market_cap:780000000000,price:820,fin_score:6,change_pct:0.80},
+    {ticker:"UNH",name:"聯合健康",sector:"Healthcare",market_cap:510000000000,price:560,fin_score:5,change_pct:-1.48},
+    {ticker:"JNJ",name:"嬌生",sector:"Healthcare",market_cap:380000000000,price:160,fin_score:5,change_pct:-0.21},
+    {ticker:"ABBV",name:"艾伯維",sector:"Healthcare",market_cap:330000000000,price:195,fin_score:5,change_pct:-2.52},
+    {ticker:"MRK",name:"默克",sector:"Healthcare",market_cap:290000000000,price:120,fin_score:5,change_pct:-0.26},
+    {ticker:"ISRG",name:"直覺外科",sector:"Healthcare",market_cap:200000000000,price:535,fin_score:5,change_pct:1.82},
+    {ticker:"JPM",name:"摩根大通",sector:"Financial Services",market_cap:680000000000,price:225,fin_score:5,change_pct:0.19},
+    {ticker:"V",name:"Visa",sector:"Financial Services",market_cap:580000000000,price:278,fin_score:5,change_pct:-0.64},
+    {ticker:"MA",name:"萬事達",sector:"Financial Services",market_cap:480000000000,price:490,fin_score:6,change_pct:0.14},
+    {ticker:"BAC",name:"美國銀行",sector:"Financial Services",market_cap:330000000000,price:42,fin_score:4,change_pct:-0.87},
+    {ticker:"GS",name:"高盛",sector:"Financial Services",market_cap:180000000000,price:495,fin_score:5,change_pct:2.00},
+    {ticker:"AMZN",name:"亞馬遜",sector:"Consumer Cyclical",market_cap:2100000000000,price:200,fin_score:5,change_pct:-0.89},
+    {ticker:"TSLA",name:"特斯拉",sector:"Consumer Cyclical",market_cap:900000000000,price:280,fin_score:3,change_pct:-0.96},
+    {ticker:"HD",name:"家得寶",sector:"Consumer Cyclical",market_cap:380000000000,price:380,fin_score:5,change_pct:0.03},
+    {ticker:"MCD",name:"麥當勞",sector:"Consumer Cyclical",market_cap:210000000000,price:290,fin_score:5,change_pct:-0.34},
+    {ticker:"NFLX",name:"Netflix",sector:"Communication Services",market_cap:380000000000,price:920,fin_score:5,change_pct:1.06},
+    {ticker:"DIS",name:"迪士尼",sector:"Communication Services",market_cap:190000000000,price:110,fin_score:3,change_pct:-0.50},
+    {ticker:"VZ",name:"威訊",sector:"Communication Services",market_cap:170000000000,price:41,fin_score:3,change_pct:1.48},
+    {ticker:"XOM",name:"埃克森美孚",sector:"Energy",market_cap:500000000000,price:112,fin_score:4,change_pct:-0.45},
+    {ticker:"CVX",name:"雪佛龍",sector:"Energy",market_cap:280000000000,price:155,fin_score:4,change_pct:-0.78},
+    {ticker:"GE",name:"奇異航太",sector:"Industrials",market_cap:220000000000,price:200,fin_score:4,change_pct:0.87},
+    {ticker:"CAT",name:"卡特彼勒",sector:"Industrials",market_cap:190000000000,price:350,fin_score:5,change_pct:-0.54},
+    {ticker:"BA",name:"波音",sector:"Industrials",market_cap:130000000000,price:175,fin_score:3,change_pct:-1.20},
+  ]}
+};
+
+const app = {
+  M:'TW', S:null, cache:{TW:null,US:null},
+
+  clFill(g){
+    if(g>=3)  return '#6b1010';
+    if(g>=1)  return '#993C1D';
+    if(g>=0)  return '#c94e28';
+    if(g>=-1) return '#1D9E75';
+    if(g>=-3) return '#0F6E56';
+    return '#085041';
+  },
+  clText(g){ return g>=0?'rgba(255,195,165,0.95)':'rgba(130,230,185,0.92)'; },
+  pct(g){ return(g>=0?'+':'')+g.toFixed(2)+'%'; },
+  cap(v,m){
+    if(!v) return 'N/A';
+    if(m==='TW') return (v/1e8).toFixed(0)+' 億';
+    const b=v/1e9; return b>=1000?(v/1e12).toFixed(1)+'T':'$'+b.toFixed(0)+'B';
+  },
+
+  async mkt(m){
+    this.M=m; this.S=null;
+    ['TW','US'].forEach(k=>document.getElementById('b'+k).classList.toggle('on',k===m));
+    if(!this.cache[m]){
+      document.getElementById('counter').textContent='載入中...';
+      try{
+        const r=await fetch(DATA_URLS[m]+'?t='+Date.now());
+        if(r.ok){
+          const d=await r.json();
+          // 若 JSON 沒有 change_pct，隨機模擬（之後 screener 補上）
+          d.results.forEach(s=>{ if(s.change_pct==null) s.change_pct=+(Math.random()*8-4).toFixed(2); });
+          this.cache[m]=d;
+        } else { this.cache[m]=DEMO[m]; }
+      }catch(e){ this.cache[m]=DEMO[m]; }
+    }
+    this.draw();
+  },
+
+  back(){ this.S=null; this.draw(); },
+
+  groupBySector(results){
+    const map={};
+    results.forEach(r=>{
+      const s=r.sector||'其他';
+      if(!map[s]) map[s]=[];
+      map[s].push(r);
+    });
+    return Object.entries(map).map(([s,d])=>({s,d}));
+  },
+
+  draw(){
+    const raw=this.cache[this.M];
+    if(!raw) return;
+    const isTW=this.M==='TW';
+    const secs=this.groupBySector(raw.results);
+    const svg=d3.select('#map');
+    svg.selectAll('*').remove();
+    const W=document.getElementById('mapwrap').clientWidth||800;
+    const H=Math.max(500, Math.round(W*0.58));
+    svg.attr('height',H);
+
+    if(!this.S){
+      // 全覽
+      const root=d3.hierarchy({name:'r',children:secs.map(s=>({
+        name: isTW?s.s:(SECTOR_ZH[s.s]||s.s),
+        origName: s.s,
+        children:s.d
+      }))}).sum(d=>d.market_cap||0).sort((a,b)=>b.value-a.value);
+      d3.treemap().size([W,H]).paddingOuter(5).paddingTop(24).paddingInner(1)(root);
+
+      const secN=root.children||[];
+      // 板塊底色框
+      svg.selectAll('.sr').data(secN).enter().append('rect').attr('class','sr')
+        .attr('x',d=>d.x0).attr('y',d=>d.y0)
+        .attr('width',d=>d.x1-d.x0).attr('height',d=>d.y1-d.y0)
+        .attr('rx',5).attr('fill','rgba(255,255,255,0.02)')
+        .attr('stroke','rgba(255,255,255,0.08)').attr('stroke-width',1);
+      // 板塊點擊區
+      svg.selectAll('.sc').data(secN).enter().append('rect').attr('class','sc')
+        .attr('x',d=>d.x0).attr('y',d=>d.y0)
+        .attr('width',d=>d.x1-d.x0).attr('height',24)
+        .attr('fill','transparent').style('cursor','pointer')
+        .on('click',(e,d)=>{ app.S=d.data.origName||d.data.name; app.draw(); });
+      // 板塊標籤
+      svg.selectAll('.sl').data(secN).enter().append('text').attr('class','sl')
+        .attr('x',d=>d.x0+7).attr('y',d=>d.y0+15)
+        .attr('fill','rgba(255,255,255,0.6)').attr('font-size',11).attr('font-weight','500')
+        .attr('font-family',"'Noto Sans TC',sans-serif").attr('pointer-events','none')
+        .text(d=>{ const w=d.x1-d.x0; return w<40?'':w<90?d.data.name.slice(0,4):d.data.name; });
+
+      this._tiles(svg,root.leaves(),W,H,false,isTW);
+      document.getElementById('breadcrumb').innerHTML='<span style="color:#4a5a7a">全部板塊</span>';
+      document.getElementById('counter').textContent=root.leaves().length+' 支';
+      document.getElementById('updated').textContent='更新：'+raw.updated;
+
+    } else {
+      // 展開單一板塊
+      const sec=secs.find(s=>s.s===this.S);
+      if(!sec) return;
+      const root=d3.hierarchy({name:'r',children:sec.d}).sum(d=>d.market_cap||0).sort((a,b)=>b.value-a.value);
+      d3.treemap().size([W,H]).padding(3)(root);
+      this._tiles(svg,root.leaves(),W,H,true,isTW);
+      const secLabel=isTW?sec.s:(SECTOR_ZH[sec.s]||sec.s);
+      document.getElementById('breadcrumb').innerHTML=
+        '<span onclick="app.back()" style="cursor:pointer;color:#4a8aff">全部板塊</span>'
+        +' <span style="color:#2a3a58"> › </span>'
+        +'<span style="color:#e8f0ff">'+secLabel+'</span>';
+      document.getElementById('counter').textContent=secLabel+' · '+sec.d.length+' 支';
+      document.getElementById('updated').textContent='更新：'+raw.updated;
+    }
+    document.getElementById('tooltip').style.display='none';
+  },
+
+  _tiles(svg,leaves,W,H,big,isTW){
+    const self=this;
+    const g=svg.selectAll('.tg').data(leaves).enter().append('g').attr('class','tg');
+
+    g.append('rect')
+      .attr('x',d=>d.x0).attr('y',d=>d.y0)
+      .attr('width',d=>Math.max(0,d.x1-d.x0)).attr('height',d=>Math.max(0,d.y1-d.y0))
+      .attr('rx',big?3:2)
+      .attr('fill',d=>self.clFill(d.data.change_pct||0))
+      .attr('stroke','rgba(6,10,20,0.6)').attr('stroke-width',0.5)
+      .style('cursor','pointer')
+      .on('mouseenter',function(e,d){
+        d3.select(this).attr('stroke','rgba(255,255,255,0.4)').attr('stroke-width',1.5);
+        const tip=document.getElementById('tooltip');
+        const g2=d.data.change_pct||0;
+        const gc=g2>=0?'#f07850':'#40d090';
+        const name=isTW?d.data.name:(d.data.name||d.data.ticker);
+        tip.style.display='block';
+        tip.innerHTML=
+          '<div style="font-size:15px;font-weight:500;color:#e8f0ff;margin-bottom:2px;">'+
+            d.data.ticker.replace('.TW','').replace('.TWO','')+'</div>'+
+          '<div style="color:#aabbcc;font-size:12px;margin-bottom:8px;">'+name+'</div>'+
+          '<div style="color:'+gc+';font-size:19px;font-weight:500;margin-bottom:6px;">'+self.pct(g2)+'</div>'+
+          '<div style="color:#6a8ab8;font-size:11px;margin-bottom:2px;">市值 '+self.cap(d.data.market_cap,self.M)+'</div>'+
+          '<div style="color:#6a8ab8;font-size:11px;">財務評分 <span style="color:#c8d8f0;">'+d.data.fin_score+'/6</span></div>';
+      })
+      .on('mousemove',function(e){
+        const tip=document.getElementById('tooltip');
+        let x=e.clientX+16,y=e.clientY+16;
+        if(x+190>window.innerWidth)  x=e.clientX-200;
+        if(y+130>window.innerHeight) y=e.clientY-140;
+        tip.style.left=x+'px'; tip.style.top=y+'px';
+      })
+      .on('mouseleave',function(){
+        d3.select(this).attr('stroke','rgba(6,10,20,0.6)').attr('stroke-width',0.5);
+        document.getElementById('tooltip').style.display='none';
+      });
+
+    // 文字
+    g.each(function(d){
+      const tw=d.x1-d.x0, th=d.y1-d.y0;
+      if(tw<18||th<14) return;
+      const cx=d.x0+tw/2, cy=d.y0+th/2;
+      const el=d3.select(this);
+      const g2=d.data.change_pct||0;
+      const tick=d.data.ticker.replace('.TW','').replace('.TWO','');
+      const name=isTW?d.data.name:(d.data.name||'');
+      const pctStr=self.pct(g2);
+
+      // 字型大小：依方塊面積動態決定
+      const area=tw*th;
+      const fsTick=Math.max(11,Math.min(big?20:16, tw/3.2, th/2.5));
+      const fsPct=Math.max(10,fsTick*0.85);
+      const fsName=Math.max(10,fsTick*0.78);
+
+      const canPct  = th > fsTick+fsPct+8  && tw>36;
+      const canName = th > fsTick+fsPct+fsName+14 && tw>46;
+
+      const rows=[];
+      rows.push({txt:tick,   fs:fsTick, color:'rgba(255,255,255,0.95)', w:500});
+      if(canPct)  rows.push({txt:pctStr, fs:fsPct, color:self.clText(g2), w:400});
+      if(canName && name){
+        const shortName = name.length>6 ? name.slice(0,5)+'…' : name;
+        rows.push({txt:shortName, fs:fsName, color:'rgba(255,255,255,0.65)', w:400});
+      }
+
+      const gap=4;
+      const totalH=rows.reduce((s,r,i)=>s+r.fs+(i>0?gap:0),0);
+      let y=cy - totalH/2;
+
+      rows.forEach(r=>{
+        el.append('text')
+          .attr('x',cx).attr('y',y+r.fs*0.5)
+          .attr('text-anchor','middle').attr('dominant-baseline','middle')
+          .attr('fill',r.color).attr('font-size',r.fs).attr('font-weight',r.w)
+          .attr('font-family',"'Noto Sans TC','Barlow Condensed',sans-serif")
+          .attr('pointer-events','none')
+          .text(r.txt);
+        y+=r.fs+gap;
+      });
+    });
+  }
+};
+
+// 啟動
+app.mkt('TW');
+
+// 視窗縮放重繪
+let resizeTimer;
+window.addEventListener('resize',()=>{
+  clearTimeout(resizeTimer);
+  resizeTimer=setTimeout(()=>app.draw(),150);
+});
+</script>
+</body>
+</html>
