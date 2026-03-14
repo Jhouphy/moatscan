@@ -47,6 +47,13 @@
   <!-- 板塊/主題標籤列 -->
   <div id="tagbar" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;min-height:28px;"></div>
 
+  <!-- 載入提示 -->
+  <div id="loadmsg" style="display:none;text-align:center;padding:60px 0;color:#3a4a6a;font-size:14px;">
+    <div style="width:32px;height:32px;border:3px solid #1a2540;border-top-color:#f0b90b;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 14px;"></div>
+    載入資料中...
+  </div>
+  <style>@keyframes spin{to{transform:rotate(360deg);}}</style>
+
   <!-- Canvas -->
   <div id="mapwrap" style="width:100%;border-radius:10px;overflow:hidden;background:#060a14;">
     <svg id="map" style="display:block;width:100%;"></svg>
@@ -211,7 +218,10 @@ const app = {
     this.M=m; this.S=null;
     ['TW','US'].forEach(k=>document.getElementById('b'+k).classList.toggle('on',k===m));
     if(!this.cache[m]){
-      document.getElementById('counter').textContent='載入中...';
+      document.getElementById('loadmsg').style.display='block';
+      document.getElementById('mapwrap').style.display='none';
+      document.getElementById('tagbar').innerHTML='';
+      document.getElementById('counter').textContent='';
       try{
         const r=await fetch(DATA_URLS[m]+'?t='+Date.now());
         if(r.ok){
@@ -222,6 +232,8 @@ const app = {
         } else { this.cache[m]=DEMO[m]; }
       }catch(e){ this.cache[m]=DEMO[m]; }
     }
+    document.getElementById('loadmsg').style.display='none';
+    document.getElementById('mapwrap').style.display='block';
     this.draw();
   },
 
@@ -296,7 +308,7 @@ const app = {
       document.getElementById('counter').textContent=root.leaves().length+' 支（市值門檻以上）';
       document.getElementById('updated').textContent='更新：'+raw.updated;
       // 渲染板塊標籤列（顯示漲跌數）
-      this._renderTagBar(filteredSecs, isTW, null, null, null);
+      this._renderTagBar('sectors', null);
 
     } else if(this.S && this.T) {
       // 第三層：板塊內的主題篩選
@@ -316,8 +328,7 @@ const app = {
         +'<span style="background:#f0b90b18;color:#f0b90b;padding:2px 8px;border-radius:4px;font-size:12px;">'+this.T+'</span>';
       document.getElementById('counter').textContent=this.T+' · '+themed.length+' 支';
       document.getElementById('updated').textContent='更新：'+raw.updated;
-      // 主題層：標籤列同時顯示板塊（highlight active）+ 主題（highlight active）
-      this._renderTagBar(true, isTW, sec, this.T, this.S);
+      this._renderTagBar('themes', this.T);
 
     } else {
       // 第二層：展開單一板塊 + 顯示主題標籤
@@ -344,28 +355,27 @@ const app = {
       document.getElementById('counter').textContent=secLabel+' · '+sec.d.length+' 支';
       document.getElementById('updated').textContent='更新：'+raw.updated;
       // 渲染主題標籤列
-      this._renderTagBar(true, isTW, sec, null, this.S);
+      this._renderTagBar('themes', null);
     }
     document.getElementById('tooltip').style.display='none';
   },
 
-  // 渲染標籤列
-  // secs: 板塊陣列（概覽用）; sec: 單一板塊（板塊內主題用）
-  _renderTagBar(secs, isTW, sec, activeTheme, activeSector){
+  // 渲染標籤列：mode="sectors" 顯示板塊標籤；mode="themes" 顯示主題標籤
+  _renderTagBar(mode, active){
     const bar = document.getElementById('tagbar');
     bar.innerHTML = '';
     const self = this;
+    const isTW = this.M==='TW';
+    const raw = this.cache[this.M]||{results:[]};
+    const secs = this.groupBySector(raw.results);
 
-    if(secs && Array.isArray(secs)){
-      // 概覽：顯示各板塊，帶漲跌數
-      // 用全量 secs（不是 filteredSecs），使標籤列始終完整
-      const rawSecs = self.groupBySector((self.cache[self.M]||{results:[]}).results);
-      rawSecs.forEach(s=>{
+    if(mode==='sectors'){
+      secs.forEach(s=>{
         const label = isTW ? s.s : (SECTOR_ZH[s.s]||s.s);
-        const up   = s.d.filter(r=>(r.change_pct||0)>0).length;
-        const dn   = s.d.filter(r=>(r.change_pct||0)<0).length;
-        const isAct = activeSector===s.s;
-        const btn  = document.createElement('button');
+        const up = s.d.filter(r=>(r.change_pct||0)>0).length;
+        const dn = s.d.filter(r=>(r.change_pct||0)<0).length;
+        const isAct = active===s.s;
+        const btn = document.createElement('button');
         btn.style.cssText=`background:${isAct?'#f0b90b18':'#0d1120'};border:${isAct?'1.5px solid #f0b90b':'1px solid #1e2840'};border-radius:7px;padding:4px 10px;cursor:pointer;display:flex;align-items:center;gap:5px;font-size:12px;color:${isAct?'#f0b90b':'#c8d8f0'};font-family:"Noto Sans TC",sans-serif;white-space:nowrap;transition:all 0.15s;`;
         btn.innerHTML=`<span>${label}</span>`
           +(up?`<span style="color:#ff8866;font-size:11px;">${up}🔴</span>`:'')
@@ -375,59 +385,36 @@ const app = {
         btn.onclick=()=>{ self.S=s.s; self.T=null; self.draw(); };
         bar.appendChild(btn);
       });
-    } else if(secs && !Array.isArray(secs)){
-      // 板塊層/主題層：重新渲染板塊標籤（帶 highlight）
-      const rawSecs2 = self.groupBySector((self.cache[self.M]||{results:[]}).results);
-      rawSecs2.forEach(s=>{
-        const label = isTW ? s.s : (SECTOR_ZH[s.s]||s.s);
-        const up   = s.d.filter(r=>(r.change_pct||0)>0).length;
-        const dn   = s.d.filter(r=>(r.change_pct||0)<0).length;
-        const isAct = activeSector===s.s;
-        const btn  = document.createElement('button');
-        btn.style.cssText=`background:${isAct?'#f0b90b18':'#0d1120'};border:${isAct?'1.5px solid #f0b90b':'1px solid #1e2840'};border-radius:7px;padding:4px 10px;cursor:pointer;display:flex;align-items:center;gap:5px;font-size:12px;color:${isAct?'#f0b90b':'#c8d8f0'};font-family:"Noto Sans TC",sans-serif;white-space:nowrap;transition:all 0.15s;`;
-        btn.innerHTML=`<span>${label}</span>`
-          +(up?`<span style="color:#ff8866;font-size:11px;">${up}🔴</span>`:'')
-          +(dn?`<span style="color:#44cc88;font-size:11px;">${dn}🟢</span>`:'');
-        btn.onmouseover=()=>{ if(!isAct) btn.style.background='#1a2540'; };
-        btn.onmouseout=()=>{ if(!isAct) btn.style.background='#0d1120'; };
-        btn.onclick=()=>{ self.S=s.s; self.T=null; self.draw(); };
-        bar.appendChild(btn);
-      });
-      // 分隔線
-      if(sec){
-        const sep=document.createElement('span');
-        sep.style.cssText='color:#2a3a58;font-size:12px;padding:0 4px;align-self:center;';
-        sep.textContent='|';
-        bar.appendChild(sep);
-      }
-    }
-    if(sec){
-      // 板塊內：顯示主題標籤，帶漲跌數
-      const themeCounts={};
+
+    } else if(mode==='themes'){
+      const sec = secs.find(s=>s.s===this.S);
+      if(!sec){ bar.innerHTML=''; return; }
+      const counts={};
       sec.d.forEach(s=>(s.themes||[]).forEach(t=>{
-        if(!themeCounts[t]) themeCounts[t]={up:0,down:0};
-        if((s.change_pct||0)>0) themeCounts[t].up++;
-        else if((s.change_pct||0)<0) themeCounts[t].down++;
+        if(!counts[t]) counts[t]={up:0,dn:0};
+        if((s.change_pct||0)>0) counts[t].up++;
+        else if((s.change_pct||0)<0) counts[t].dn++;
       }));
-      const themes=Object.entries(themeCounts).sort((a,b)=>(b[1].up+b[1].down)-(a[1].up+a[1].down));
+      const themes=Object.entries(counts).sort((a,b)=>(b[1].up+b[1].dn)-(a[1].up+a[1].dn));
       if(!themes.length){
-        bar.innerHTML='<span style="font-size:11px;color:#3a4a6a;">（此板塊尚無主題標籤，重跑 screener 後出現）</span>';
+        bar.innerHTML='<span style="font-size:11px;color:#3a4a6a;align-self:center;">（此板塊尚無主題標籤，重跑 screener 後顯示）</span>';
         return;
       }
       themes.forEach(([t,cnt])=>{
-        const isActive = activeTheme===t;
+        const isAct = active===t;
         const btn = document.createElement('button');
-        btn.style.cssText=`background:${isActive?'#f0b90b18':'#0d1120'};border:1px solid ${isActive?'#f0b90b':'#1e2840'};border-radius:7px;padding:4px 10px;cursor:pointer;display:flex;align-items:center;gap:5px;font-size:12px;color:${isActive?'#f0b90b':'#c8d8f0'};font-family:"Noto Sans TC",sans-serif;white-space:nowrap;transition:all 0.15s;`;
+        btn.style.cssText=`background:${isAct?'#f0b90b18':'#0d1120'};border:${isAct?'1.5px solid #f0b90b':'1px solid #1e2840'};border-radius:7px;padding:4px 10px;cursor:pointer;display:flex;align-items:center;gap:5px;font-size:12px;color:${isAct?'#f0b90b':'#c8d8f0'};font-family:"Noto Sans TC",sans-serif;white-space:nowrap;transition:all 0.15s;`;
         btn.innerHTML=`<span>${t}</span>`
           +(cnt.up?`<span style="color:#ff8866;font-size:11px;">${cnt.up}🔴</span>`:'')
-          +(cnt.down?`<span style="color:#44cc88;font-size:11px;">${cnt.down}🟢</span>`:'');
-        btn.onmouseover=()=>{ if(!isActive) btn.style.background='#1a2540'; };
-        btn.onmouseout=()=>{ if(!isActive) btn.style.background='#0d1120'; };
+          +(cnt.dn?`<span style="color:#44cc88;font-size:11px;">${cnt.dn}🟢</span>`:'');
+        btn.onmouseover=()=>{ if(!isAct) btn.style.background='#1a2540'; };
+        btn.onmouseout=()=>{ if(!isAct) btn.style.background='#0d1120'; };
         btn.onclick=()=>{ self.T=t; self.draw(); };
         bar.appendChild(btn);
       });
     }
   },
+
 
   _tiles(svg,leaves,W,H,big,isTW){
     const self=this;
