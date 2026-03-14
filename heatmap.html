@@ -257,7 +257,14 @@ const app = {
         ...s, d: s.d.filter(r=>(r.market_cap||0)>=minCap)
       })).filter(s=>s.d.length>0);
 
-      const root=d3.hierarchy({name:'r',children:filteredSecs.map(s=>({
+      // 概覽：每個板塊只取市值前 20 大（其餘點進板塊後才顯示）
+      const MAX_PER_SEC = 20;
+      const previewSecs = filteredSecs.map(s=>({
+        ...s,
+        d: [...s.d].sort((a,b)=>(b.market_cap||0)-(a.market_cap||0)).slice(0,MAX_PER_SEC)
+      }));
+
+      const root=d3.hierarchy({name:'r',children:previewSecs.map(s=>({
         name: isTW?s.s:(SECTOR_ZH[s.s]||s.s),
         origName: s.s,
         children:s.d
@@ -289,7 +296,7 @@ const app = {
       document.getElementById('counter').textContent=root.leaves().length+' 支（市值門檻以上）';
       document.getElementById('updated').textContent='更新：'+raw.updated;
       // 渲染板塊標籤列（顯示漲跌數）
-      this._renderTagBar(filteredSecs, isTW, null, null);
+      this._renderTagBar(filteredSecs, isTW, null, null, null);
 
     } else if(this.S && this.T) {
       // 第三層：板塊內的主題篩選
@@ -309,7 +316,8 @@ const app = {
         +'<span style="background:#f0b90b18;color:#f0b90b;padding:2px 8px;border-radius:4px;font-size:12px;">'+this.T+'</span>';
       document.getElementById('counter').textContent=this.T+' · '+themed.length+' 支';
       document.getElementById('updated').textContent='更新：'+raw.updated;
-      document.getElementById('tagbar').innerHTML='';
+      // 主題層：標籤列同時顯示板塊（highlight active）+ 主題（highlight active）
+      this._renderTagBar(true, isTW, sec, this.T, this.S);
 
     } else {
       // 第二層：展開單一板塊 + 顯示主題標籤
@@ -336,35 +344,64 @@ const app = {
       document.getElementById('counter').textContent=secLabel+' · '+sec.d.length+' 支';
       document.getElementById('updated').textContent='更新：'+raw.updated;
       // 渲染主題標籤列
-      this._renderTagBar(null, isTW, sec, null);
+      this._renderTagBar(true, isTW, sec, null, this.S);
     }
     document.getElementById('tooltip').style.display='none';
   },
 
   // 渲染標籤列
   // secs: 板塊陣列（概覽用）; sec: 單一板塊（板塊內主題用）
-  _renderTagBar(secs, isTW, sec, activeTheme){
+  _renderTagBar(secs, isTW, sec, activeTheme, activeSector){
     const bar = document.getElementById('tagbar');
     bar.innerHTML = '';
     const self = this;
 
-    if(secs){
+    if(secs && Array.isArray(secs)){
       // 概覽：顯示各板塊，帶漲跌數
-      secs.forEach(s=>{
+      // 用全量 secs（不是 filteredSecs），使標籤列始終完整
+      const rawSecs = self.groupBySector((self.cache[self.M]||{results:[]}).results);
+      rawSecs.forEach(s=>{
         const label = isTW ? s.s : (SECTOR_ZH[s.s]||s.s);
         const up   = s.d.filter(r=>(r.change_pct||0)>0).length;
-        const down = s.d.filter(r=>(r.change_pct||0)<0).length;
+        const dn   = s.d.filter(r=>(r.change_pct||0)<0).length;
+        const isAct = activeSector===s.s;
         const btn  = document.createElement('button');
-        btn.style.cssText='background:#0d1120;border:1px solid #1e2840;border-radius:7px;padding:4px 10px;cursor:pointer;display:flex;align-items:center;gap:5px;font-size:12px;color:#c8d8f0;font-family:"Noto Sans TC",sans-serif;white-space:nowrap;transition:background 0.15s;';
+        btn.style.cssText=`background:${isAct?'#f0b90b18':'#0d1120'};border:${isAct?'1.5px solid #f0b90b':'1px solid #1e2840'};border-radius:7px;padding:4px 10px;cursor:pointer;display:flex;align-items:center;gap:5px;font-size:12px;color:${isAct?'#f0b90b':'#c8d8f0'};font-family:"Noto Sans TC",sans-serif;white-space:nowrap;transition:all 0.15s;`;
         btn.innerHTML=`<span>${label}</span>`
           +(up?`<span style="color:#ff8866;font-size:11px;">${up}🔴</span>`:'')
-          +(down?`<span style="color:#44cc88;font-size:11px;">${down}🟢</span>`:'');
-        btn.onmouseover=()=>btn.style.background='#1a2540';
-        btn.onmouseout=()=>btn.style.background='#0d1120';
+          +(dn?`<span style="color:#44cc88;font-size:11px;">${dn}🟢</span>`:'');
+        btn.onmouseover=()=>{ if(!isAct) btn.style.background='#1a2540'; };
+        btn.onmouseout=()=>{ if(!isAct) btn.style.background='#0d1120'; };
         btn.onclick=()=>{ self.S=s.s; self.T=null; self.draw(); };
         bar.appendChild(btn);
       });
-    } else if(sec){
+    } else if(secs && !Array.isArray(secs)){
+      // 板塊層/主題層：重新渲染板塊標籤（帶 highlight）
+      const rawSecs2 = self.groupBySector((self.cache[self.M]||{results:[]}).results);
+      rawSecs2.forEach(s=>{
+        const label = isTW ? s.s : (SECTOR_ZH[s.s]||s.s);
+        const up   = s.d.filter(r=>(r.change_pct||0)>0).length;
+        const dn   = s.d.filter(r=>(r.change_pct||0)<0).length;
+        const isAct = activeSector===s.s;
+        const btn  = document.createElement('button');
+        btn.style.cssText=`background:${isAct?'#f0b90b18':'#0d1120'};border:${isAct?'1.5px solid #f0b90b':'1px solid #1e2840'};border-radius:7px;padding:4px 10px;cursor:pointer;display:flex;align-items:center;gap:5px;font-size:12px;color:${isAct?'#f0b90b':'#c8d8f0'};font-family:"Noto Sans TC",sans-serif;white-space:nowrap;transition:all 0.15s;`;
+        btn.innerHTML=`<span>${label}</span>`
+          +(up?`<span style="color:#ff8866;font-size:11px;">${up}🔴</span>`:'')
+          +(dn?`<span style="color:#44cc88;font-size:11px;">${dn}🟢</span>`:'');
+        btn.onmouseover=()=>{ if(!isAct) btn.style.background='#1a2540'; };
+        btn.onmouseout=()=>{ if(!isAct) btn.style.background='#0d1120'; };
+        btn.onclick=()=>{ self.S=s.s; self.T=null; self.draw(); };
+        bar.appendChild(btn);
+      });
+      // 分隔線
+      if(sec){
+        const sep=document.createElement('span');
+        sep.style.cssText='color:#2a3a58;font-size:12px;padding:0 4px;align-self:center;';
+        sep.textContent='|';
+        bar.appendChild(sep);
+      }
+    }
+    if(sec){
       // 板塊內：顯示主題標籤，帶漲跌數
       const themeCounts={};
       sec.d.forEach(s=>(s.themes||[]).forEach(t=>{
