@@ -73,10 +73,13 @@ const fmt$ = v => v==null?"N/A":"$"+Number(v).toLocaleString(undefined,{minimumF
 
 const LS_WATCH = "moatscan_watchlist_v1";
 const LS_FAIR  = "moatscan_fairval_v1";
+const LS_MOAT  = "moatscan_moatmap_v1";
 const loadWatchlist = () => { try{ return JSON.parse(localStorage.getItem(LS_WATCH)||"[]"); }catch{ return []; } };
 const saveWatchlist = l => { try{ localStorage.setItem(LS_WATCH,JSON.stringify(l)); }catch{} };
 const loadFairData  = () => { try{ return JSON.parse(localStorage.getItem(LS_FAIR)||"{}"); }catch{ return {}; } };
 const saveFairData  = (ticker,data) => { try{ const a=loadFairData(); a[ticker]=data; localStorage.setItem(LS_FAIR,JSON.stringify(a)); }catch{} };
+const loadMoatMap   = () => { try{ return JSON.parse(localStorage.getItem(LS_MOAT)||"{}"); }catch{ return {}; } };
+const saveMoatMap   = map => { try{ localStorage.setItem(LS_MOAT,JSON.stringify(map)); }catch{} };
 
 function calcValLight(stock) {
   const saved=loadFairData()[stock.ticker];
@@ -446,7 +449,7 @@ function App() {
   const [error,setError]=useState("");
   const [useDemo,setUseDemo]=useState(false);
   const [selected,setSelected]=useState(null);
-  const [moatMap,setMoatMap]=useState({});
+  const [moatMap,setMoatMap]=useState(()=>loadMoatMap());
   const [filterMin,setFilterMin]=useState(4);
   const [sortBy,setSortBy]=useState("fin_score");
   const [search,setSearch]=useState("");
@@ -489,7 +492,11 @@ function App() {
     return [...l].sort((a,b)=>b[sortBy]-a[sortBy]);
   },[enriched,filterMin,sectorFilter,search,sortBy]);
   const qualified=filtered.filter(r=>r.total_score>=7);
-  const onMoatUpdate=(ticker,score,types)=>setMoatMap(p=>({...p,[ticker]:{score,types}}));
+  const onMoatUpdate=(ticker,score,types)=>setMoatMap(p=>{
+    const next={...p,[ticker]:{score,types}};
+    saveMoatMap(next);
+    return next;
+  });
 
   // 板塊分佈：從通過 filterMin 的股票中統計
   const sectorBreakdown = useMemo(()=>{
