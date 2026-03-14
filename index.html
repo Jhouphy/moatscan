@@ -528,6 +528,12 @@ function App() {
           <button className={`tab-btn ${mainTab==="watch"?"active":""}`} onClick={()=>setMainTab("watch")} style={{fontSize:15}}>
             ★ 觀察清單{watchlist.length>0&&<span style={{marginLeft:6,background:"#f0b90b",color:"#080c18",borderRadius:10,padding:"1px 7px",fontSize:11,fontWeight:700}}>{watchlist.length}</span>}
           </button>
+          <a href="heatmap.html"
+            style={{padding:"10px 20px",fontSize:15,color:"#6a8ab8",textDecoration:"none",borderBottom:"2px solid transparent",transition:"all 0.2s",whiteSpace:"nowrap"}}
+            onMouseEnter={e=>{e.target.style.color="#8899bb";}}
+            onMouseLeave={e=>{e.target.style.color="#6a8ab8";}}>
+            🗺 熱力圖
+          </a>
         </div>
 
         {mainTab==="watch"&&<WatchlistPage watchlist={watchlist} twStocks={twEnriched} usStocks={usEnriched} onSelect={setSelected} onRemove={toggleWatch}/>}
