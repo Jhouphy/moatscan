@@ -54,10 +54,34 @@ const DEMO_DATA = {
 };
 
 const MOAT_TYPES = [
-  {id:"brand",label:"品牌",icon:"™"},{id:"patent",label:"專利",icon:"⚗"},
-  {id:"license",label:"特許",icon:"📜"},{id:"switching",label:"轉換成本",icon:"🔒"},
-  {id:"network",label:"網絡效應",icon:"🌐"},{id:"cost",label:"成本優勢",icon:"⚙"},
-  {id:"scale",label:"規模優勢",icon:"📊"},
+  {id:"brand",    label:"品牌",    icon:"™",
+   group:"無形資產",
+   desc:"即使品質相同，消費者仍願意為品牌支付更高價格，代表品牌的認可與信任。",
+   example:"Tiffany 珠寶、Nike 運動鞋"},
+  {id:"patent",   label:"專利",    icon:"⚗",
+   group:"無形資產",
+   desc:"單一專利防禦力有限，但若擁有上千種並持續更新，可形成競爭者難以突破的壁壘。",
+   example:"大藥廠的專利藥品"},
+  {id:"license",  label:"特許",    icon:"📜",
+   group:"無形資產",
+   desc:"政府授予的特許經營權，申請門檻極高，競爭者幾乎無法取得同等資格。",
+   example:"高鐵、煉油廠、砂石場"},
+  {id:"switching",label:"轉換成本",icon:"🔒",
+   group:"轉換成本",
+   desc:"使用者切換到其他廠商需付出極大代價（金錢、時間或學習成本），讓客戶難以離開。",
+   example:"Adobe Photoshop、Oracle 資料庫"},
+  {id:"network",  label:"網絡效應",icon:"🌐",
+   group:"網絡效應",
+   desc:"用戶越多，產品對每個人的價值就越高，形成正向循環讓後進者難以追趕。",
+   example:"Facebook、Line、拍賣平台"},
+  {id:"cost",     label:"成本優勢",icon:"⚙",
+   group:"成本優勢",
+   desc:"透過獨特生產流程、地點優勢或稀有資源，將成本壓到競爭者難以複製的水準。",
+   example:"Dell 跳過中間商直銷、礦藏資源"},
+  {id:"scale",    label:"規模優勢",icon:"📊",
+   group:"規模優勢",
+   desc:"規模遠大於同業 5～10 倍時，固定成本被大量分攤；或在小領域形成獨佔，讓對手進入不划算。",
+   example:"大型串流平台、區域有線電視"},
 ];
 const METRIC_LABELS = {eps:"EPS",fcf:"FCF",roic:"ROIC",de:"D/E",netmargin:"Net Margin",dividend:"配息"};
 const MOAT_COLORS   = ["#4a5a7a","#ff8c42","#ffd600","#00c853"];
@@ -287,6 +311,7 @@ function CompanyModal({stock,market,onClose,onMoatUpdate,watchlist,onWatchToggle
   const [moats,setMoats]=useState([]);
   const [moatScore,setMoatScore]=useState(stock.moat_score||0);
   const [moatSaved,setMoatSaved]=useState(false);
+  const [showMoatHelp,setShowMoatHelp]=useState(false);
   const [translated,setTranslated]=useState("");
   const [translating,setTranslating]=useState(false);
   const isWatch=watchlist.includes(stock.ticker);
@@ -361,7 +386,29 @@ function CompanyModal({stock,market,onClose,onMoatUpdate,watchlist,onWatchToggle
             </div>)}
           </div>)}
           {activeTab==="moat"&&(<div>
-            <div style={{fontSize:13,color:"#8899bb",marginBottom:12}}>勾選符合的護城河類型</div>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12}}>
+              <span style={{fontSize:13,color:"#8899bb"}}>勾選符合的護城河類型</span>
+              <div style={{position:"relative",display:"inline-block"}}>
+                <button
+                  onMouseEnter={()=>setShowMoatHelp(true)}
+                  onMouseLeave={()=>setShowMoatHelp(false)}
+                  style={{width:18,height:18,borderRadius:"50%",background:"#1a2540",border:"1px solid #2a3a58",color:"#6a8ab8",fontSize:11,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,lineHeight:1}}>?</button>
+                {showMoatHelp&&(
+                  <div style={{position:"absolute",left:24,top:-4,zIndex:200,background:"#0d1120",border:"1px solid #2a3a58",borderRadius:10,padding:"10px 14px",width:280,boxShadow:"0 4px 20px rgba(0,0,0,0.6)"}}>
+                    {MOAT_TYPES.map(m=>(
+                      <div key={m.id} style={{marginBottom:8,paddingBottom:8,borderBottom:"1px solid #1a2540"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                          <span style={{fontSize:11,color:"#f0b90b",background:"#f0b90b15",padding:"1px 6px",borderRadius:3}}>{m.group}</span>
+                          <span style={{fontSize:12,fontWeight:600,color:"#c8d8f0"}}>{m.icon} {m.label}</span>
+                        </div>
+                        <div style={{fontSize:11,color:"#8899bb",lineHeight:1.6}}>{m.desc}</div>
+                        <div style={{fontSize:11,color:"#4a5a7a",marginTop:3}}>例：{m.example}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
             <div style={{display:"flex",flexWrap:"wrap",gap:7,marginBottom:14}}>
               {MOAT_TYPES.map(m=>(
                 <button key={m.id} onClick={()=>setMoats(p=>p.includes(m.id)?p.filter(x=>x!==m.id):[...p,m.id])}
