@@ -132,7 +132,7 @@ const DEMO = {
 };
 
 const app = {
-  M:'TW', S:null, cache:{TW:null,US:null},
+  M:'TW', S:null, T:null, cache:{TW:null,US:null},
 
   clFill(g){
     if(g>=3)  return '#6b1010';
@@ -218,7 +218,8 @@ const app = {
     this.draw();
   },
 
-  back(){ this.S=null; this.draw(); },
+  back(){ this.S=null; this.T=null; this.draw(); },
+  backToSector(){ this.T=null; this.draw(); },
 
   groupBySector(results){
     const map={};
@@ -275,18 +276,64 @@ const app = {
       document.getElementById('counter').textContent=root.leaves().length+' 支';
       document.getElementById('updated').textContent='更新：'+raw.updated;
 
-    } else {
-      // 展開單一板塊
+    } else if(this.S && this.T) {
+      // 第三層：板塊內的主題篩選
       const sec=secs.find(s=>s.s===this.S);
       if(!sec) return;
-      const root=d3.hierarchy({name:'r',children:sec.d}).sum(d=>d.market_cap||0).sort((a,b)=>b.value-a.value);
+      const themed=sec.d.filter(s=>(s.themes||[]).includes(this.T));
+      if(!themed.length){ this.T=null; this.draw(); return; }
+      const root=d3.hierarchy({name:'r',children:themed}).sum(d=>d.market_cap||0).sort((a,b)=>b.value-a.value);
       d3.treemap().size([W,H]).padding(3)(root);
       this._tiles(svg,root.leaves(),W,H,true,isTW);
       const secLabel=isTW?sec.s:(SECTOR_ZH[sec.s]||sec.s);
       document.getElementById('breadcrumb').innerHTML=
         '<span onclick="app.back()" style="cursor:pointer;color:#4a8aff">全部板塊</span>'
         +' <span style="color:#2a3a58"> › </span>'
-        +'<span style="color:#e8f0ff">'+secLabel+'</span>';
+        +'<span onclick="app.backToSector()" style="cursor:pointer;color:#4a8aff">'+secLabel+'</span>'
+        +' <span style="color:#2a3a58"> › </span>'
+        +'<span style="background:#f0b90b18;color:#f0b90b;padding:2px 8px;border-radius:4px;font-size:12px;">'+this.T+'</span>';
+      document.getElementById('counter').textContent=this.T+' · '+themed.length+' 支';
+      document.getElementById('updated').textContent='更新：'+raw.updated;
+
+    } else {
+      // 第二層：展開單一板塊 + 顯示主題標籤
+      const sec=secs.find(s=>s.s===this.S);
+      if(!sec) return;
+      const root=d3.hierarchy({name:'r',children:sec.d}).sum(d=>d.market_cap||0).sort((a,b)=>b.value-a.value);
+      d3.treemap().size([W,H]).padding(3)(root);
+
+      // 計算此板塊有哪些主題，並依出現次數排序
+      const themeCounts={};
+      sec.d.forEach(s=>(s.themes||[]).forEach(t=>{ themeCounts[t]=(themeCounts[t]||0)+1; }));
+      const themes=Object.entries(themeCounts).sort((a,b)=>b[1]-a[1]);
+
+      const secLabel=isTW?sec.s:(SECTOR_ZH[sec.s]||sec.s);
+
+      // 若有主題，縮小 treemap 高度留出主題標籤列
+      const tagH = themes.length ? 44 : 0;
+      d3.treemap().size([W, H-tagH]).padding(3)(root);
+      this._tiles(svg,root.leaves(),W,H-tagH,true,isTW);
+
+      // 主題標籤（foreignObject 做 HTML flex wrap）
+      if(themes.length){
+        const fo=svg.append('foreignObject').attr('x',0).attr('y',H-tagH).attr('width',W).attr('height',tagH);
+        const div=fo.append('xhtml:div').style('display','flex').style('flex-wrap','wrap')
+          .style('gap','6px').style('padding','8px 10px').style('background','#060a14').style('height','100%').style('align-items','center');
+        themes.forEach(([t,cnt])=>{
+          div.append('xhtml:button')
+            .style('background','#1a2540').style('border','1px solid #2a3a58').style('border-radius','6px')
+            .style('color','#c8d8f0').style('font-size','12px').style('padding','3px 10px').style('cursor','pointer')
+            .style('font-family',"'Noto Sans TC',sans-serif").style('white-space','nowrap')
+            .text(t+' '+cnt)
+            .on('click',()=>{ app.T=t; app.draw(); });
+        });
+      }
+
+      document.getElementById('breadcrumb').innerHTML=
+        '<span onclick="app.back()" style="cursor:pointer;color:#4a8aff">全部板塊</span>'
+        +' <span style="color:#2a3a58"> › </span>'
+        +'<span style="color:#e8f0ff">'+secLabel+'</span>'
+        +(themes.length?' <span style="color:#3a4a6a;font-size:11px;margin-left:4px;">點主題標籤可篩選</span>':'');
       document.getElementById('counter').textContent=secLabel+' · '+sec.d.length+' 支';
       document.getElementById('updated').textContent='更新：'+raw.updated;
     }
