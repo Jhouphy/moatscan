@@ -209,8 +209,8 @@ const app = {
         const r=await fetch(DATA_URLS[m]+'?t='+Date.now());
         if(r.ok){
           const d=await r.json();
-          // 若 JSON 沒有 change_pct，隨機模擬（之後 screener 補上）
-          d.results.forEach(s=>{ if(s.change_pct==null) s.change_pct=+(Math.random()*8-4).toFixed(2); });
+          // change_pct 由 screener 每日計算，若缺則顯示 0（灰色）
+          d.results.forEach(s=>{ if(s.change_pct==null) s.change_pct=0; });
           this.cache[m]=d;
         } else { this.cache[m]=DEMO[m]; }
       }catch(e){ this.cache[m]=DEMO[m]; }
