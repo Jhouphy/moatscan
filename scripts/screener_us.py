@@ -198,7 +198,9 @@ def score_ticker(ticker_str, retries=3):
             sector   = info.get("sector",   "Unknown")
             industry = info.get("industry", "Unknown")
             mkt_cap  = info.get("marketCap") or 0
-            price    = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+            price      = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+            prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose") or 0
+            change_pct = round((price - prev_close) / prev_close * 100, 2) if prev_close and price else None
             summary  = (info.get("longBusinessSummary") or "")[:300]
 
             if mkt_cap and mkt_cap < 500_000_000:
@@ -323,6 +325,7 @@ def score_ticker(ticker_str, retries=3):
                 "peg":         peg_val,
                 "pe_txt":      pe_txt,
                 "updated":     datetime.now().strftime("%Y-%m-%d"),
+                "change_pct":  change_pct,
             }
 
         except Exception as e:

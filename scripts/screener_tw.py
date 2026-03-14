@@ -75,27 +75,35 @@ def get_tw_tickers():
 def pre_filter(tickers):
     print(f"[初篩] 批次下載 {len(tickers)} 支行情...", flush=True)
     passed = []
-    for i in range(0, len(tickers), 200):
-        batch = tickers[i:i+200]
-        try:
-            df = yf.download(batch, period="5d", auto_adjust=True, progress=False)
-            if df.empty:
-                passed.extend(batch); continue
-            close  = df["Close"]
-            volume = df["Volume"]
-            for t in batch:
-                try:
-                    ac = close[t].dropna().mean()  if t in close.columns  else 0
-                    av = volume[t].dropna().mean() if t in volume.columns else 0
-                    if ac >= 5 and av >= 200_000: passed.append(t)
-                except Exception:
-                    passed.append(t)
-        except Exception as e:
-            print(f"[初篩批次失敗] {e}", flush=True)
-            passed.extend(batch)
-        time.sleep(2)
+    for i in range(0, len(tickers), 50):
+        batch = tickers[i:i+50]
+        for attempt in range(3):
+            try:
+                df = yf.download(batch, period="5d", auto_adjust=True,
+                                 progress=False, timeout=30)
+                if df.empty:
+                    passed.extend(batch); break
+                close  = df["Close"]
+                volume = df["Volume"]
+                for t in batch:
+                    try:
+                        ac = close[t].dropna().mean()  if t in close.columns  else 0
+                        av = volume[t].dropna().mean() if t in volume.columns else 0
+                        if ac >= 5 and av >= 200_000: passed.append(t)
+                    except Exception:
+                        passed.append(t)
+                break
+            except Exception as e:
+                err = str(e)
+                if attempt < 2:
+                    wait = 15 * (attempt + 1)
+                    print(f"[初篩重試] {err[:60]}，等 {wait}s...", flush=True)
+                    time.sleep(wait)
+                else:
+                    print(f"[初篩放棄此批] {err[:60]}", flush=True)
+                    passed.extend(batch)
+        time.sleep(3)
     print(f"[初篩] 通過 {len(passed)} 支（過濾 {len(tickers)-len(passed)} 支）", flush=True)
-    # 初篩後等久一點，讓 Yahoo 速率限制冷卻
     print("[暫停] 初篩完畢，等待 60 秒讓 Yahoo 冷卻...", flush=True)
     time.sleep(60)
     return passed
@@ -151,7 +159,9 @@ def score_ticker(ticker_str, name_zh, retries=3):
             sector   = SECTOR_ZH.get(sector_en,   sector_en)
             industry = INDUSTRY_ZH.get(industry_en, industry_en)
             mkt_cap  = info.get("marketCap") or 0
-            price    = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+            price      = info.get("currentPrice") or info.get("regularMarketPrice") or 0
+            prev_close = info.get("previousClose") or info.get("regularMarketPreviousClose") or 0
+            change_pct = round((price - prev_close) / prev_close * 100, 2) if prev_close and price else None
             summary  = (info.get("longBusinessSummary") or "")[:300]
             if mkt_cap and mkt_cap < 150_000_000: return None
 
@@ -263,6 +273,7 @@ def score_ticker(ticker_str, name_zh, retries=3):
                 "avg_gm":avg_gm,"std_gm":std_gm,"gm_txt":gm_txt,
                 "pe":pe_val,"peg":peg_val,"pe_txt":pe_txt,
                 "updated":datetime.now().strftime("%Y-%m-%d"),
+                "change_pct":change_pct,
             }
 
         except Exception as e:
