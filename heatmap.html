@@ -13,7 +13,7 @@
   .mkt-btn{padding:6px 18px;border:1px solid #2a3a58;border-radius:7px;background:none;color:#6a8ab8;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:15px;transition:all 0.2s;}
   .mkt-btn.on{background:linear-gradient(135deg,#f0b90b,#d4941a);border-color:transparent;color:#080c18;}
   .mkt-btn:hover:not(.on){background:#1a2540;}
-  #tooltip{position:fixed;background:#0d1120;border:1px solid #2a3a58;border-radius:10px;padding:12px 16px;font-size:12px;pointer-events:none;display:none;z-index:100;min-width:160px;color:#e8f0ff;box-shadow:0 4px 20px rgba(0,0,0,0.5);}
+  #tooltip{position:fixed;background:#0d1120;border:1px solid #2a3a58;border-radius:10px;padding:12px 16px;font-size:12px;pointer-events:none;display:none;z-index:100;min-width:175px;color:#e8f0ff;box-shadow:0 4px 20px rgba(0,0,0,0.5);}
 </style>
 </head>
 <body>
@@ -150,6 +150,56 @@ const app = {
     const b=v/1e9; return b>=1000?(v/1e12).toFixed(1)+'T':'$'+b.toFixed(0)+'B';
   },
 
+  // 從 localStorage 讀合理價（與 index.html 共用同一 key）
+  fairData(){
+    try{ return JSON.parse(localStorage.getItem('moatscan_fairval_v1')||'{}'); }catch{ return {}; }
+  },
+  // PEG 法計算合理價燈號（與 index.html 邏輯一致）
+  valLight(ticker, price){
+    const saved = this.fairData()[ticker];
+    if(!saved||!saved.type||!price) return null;
+    const p=price;
+    if(saved.type==='growth'){
+      const eps=parseFloat(saved.eps)||0;
+      const fvs=[
+        saved.g3  ? eps*parseFloat(saved.g3)  : null,
+        saved.g5  ? eps*parseFloat(saved.g5)  : null,
+        saved.g10 ? eps*parseFloat(saved.g10) : null,
+      ].filter(v=>v&&v>0);
+      if(!fvs.length) return null;
+      const lo=Math.min(...fvs), hi=Math.max(...fvs);
+      return p<lo?'green':p<=hi?'yellow':'red';
+    }
+    if(saved.type==='dividend'){
+      const div=parseFloat(saved.div)||0; if(!div) return null;
+      const fv=div*25; return p<fv?'green':p<=fv*1.1?'yellow':'red';
+    }
+    if(saved.type==='asset'){
+      const bvps=parseFloat(saved.bvps)||0; if(!bvps) return null;
+      return p<bvps*0.8?'green':p<=bvps*1.2?'yellow':'red';
+    }
+    return null;
+  },
+  valEmoji(light){ return light==='green'?'🟢':light==='yellow'?'🟡':light==='red'?'🔴':null; },
+  valLabel(light){ return light==='green'?'低估':light==='yellow'?'合理':light==='red'?'高估':null; },
+  fmtFV(ticker){
+    const saved=this.fairData()[ticker]; if(!saved||!saved.type) return null;
+    const eps=parseFloat(saved.eps)||0;
+    const labels=[];
+    if(saved.type==='growth'){
+      if(saved.g3)  labels.push('3年 $'+(eps*parseFloat(saved.g3)).toFixed(0));
+      if(saved.g5)  labels.push('5年 $'+(eps*parseFloat(saved.g5)).toFixed(0));
+      if(saved.g10) labels.push('10年 $'+(eps*parseFloat(saved.g10)).toFixed(0));
+    } else if(saved.type==='dividend'){
+      const div=parseFloat(saved.div)||0;
+      if(div) labels.push('股息股 $'+(div*25).toFixed(0));
+    } else if(saved.type==='asset'){
+      const bvps=parseFloat(saved.bvps)||0;
+      if(bvps) labels.push('資產股 $'+(bvps*0.8).toFixed(0));
+    }
+    return labels.length ? labels.join(' / ') : null;
+  },
+
   async mkt(m){
     this.M=m; this.S=null;
     ['TW','US'].forEach(k=>document.getElementById('b'+k).classList.toggle('on',k===m));
@@ -260,14 +310,23 @@ const app = {
         const g2=d.data.change_pct||0;
         const gc=g2>=0?'#f07850':'#40d090';
         const name=isTW?d.data.name:(d.data.name||d.data.ticker);
+        const light=self.valLight(d.data.ticker, d.data.price);
+        const fvStr=self.fmtFV(d.data.ticker);
+        const priceStr=d.data.price?'$'+d.data.price:'N/A';
         tip.style.display='block';
         tip.innerHTML=
-          '<div style="font-size:15px;font-weight:500;color:#e8f0ff;margin-bottom:2px;">'+
-            d.data.ticker.replace('.TW','').replace('.TWO','')+'</div>'+
-          '<div style="color:#aabbcc;font-size:12px;margin-bottom:8px;">'+name+'</div>'+
-          '<div style="color:'+gc+';font-size:19px;font-weight:500;margin-bottom:6px;">'+self.pct(g2)+'</div>'+
-          '<div style="color:#6a8ab8;font-size:11px;margin-bottom:2px;">市值 '+self.cap(d.data.market_cap,self.M)+'</div>'+
-          '<div style="color:#6a8ab8;font-size:11px;">財務評分 <span style="color:#c8d8f0;">'+d.data.fin_score+'/6</span></div>';
+          '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px;">'
+            +'<span style="font-size:15px;font-weight:500;color:#e8f0ff;">'+d.data.ticker.replace('.TW','').replace('.TWO','')+'</span>'
+            +(light?'<span style="font-size:18px;">'+self.valEmoji(light)+'</span>':'')
+          +'</div>'
+          +'<div style="color:#aabbcc;font-size:12px;margin-bottom:8px;">'+name+'</div>'
+          +'<div style="color:'+gc+';font-size:19px;font-weight:500;margin-bottom:6px;">'+self.pct(g2)+'</div>'
+          +'<div style="color:#6a8ab8;font-size:11px;margin-bottom:2px;">現價 <span style="color:#c8d8f0;">'+priceStr+'</span>'
+            +(light?' &nbsp;·&nbsp; <span style="color:'+(light==='red'?'#ff8866':light==='yellow'?'#ffd060':'#44cc88')+';">'+self.valLabel(light)+'</span>':'')+'</div>'
+          +(fvStr?'<div style="color:#5a7a9a;font-size:11px;margin-bottom:2px;">合理價 '+fvStr+'</div>':'')
+          +'<div style="color:#6a8ab8;font-size:11px;margin-bottom:2px;">市值 '+self.cap(d.data.market_cap,self.M)+'</div>'
+          +'<div style="color:#6a8ab8;font-size:11px;">財務評分 <span style="color:#c8d8f0;">'+d.data.fin_score+'/6</span></div>'
+          +(!light?'<div style="color:#3a4a6a;font-size:10px;margin-top:6px;border-top:1px solid #1a2540;padding-top:5px;">在選股頁設定合理價後可顯示燈號</div>':'');
       })
       .on('mousemove',function(e){
         const tip=document.getElementById('tooltip');
@@ -300,6 +359,15 @@ const app = {
 
       const canPct  = th > fsTick+fsPct+8  && tw>36;
       const canName = th > fsTick+fsPct+fsName+14 && tw>46;
+
+      // 合理價燈號小圓點（右上角）
+      const light=self.valLight(d.data.ticker, d.data.price);
+      if(light && tw>30 && th>22){
+        const dotColor=light==='green'?'#2ecc71':light==='yellow'?'#f0c040':'#e05030';
+        el.append('circle')
+          .attr('cx',d.x1-5).attr('cy',d.y0+5).attr('r',3.5)
+          .attr('fill',dotColor).attr('opacity',0.9).attr('pointer-events','none');
+      }
 
       const rows=[];
       rows.push({txt:tick,   fs:fsTick, color:'rgba(255,255,255,0.95)', w:500});
