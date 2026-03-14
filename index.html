@@ -85,9 +85,9 @@ function calcValLight(stock) {
   if(saved.type==="growth"){
     const eps=parseFloat(saved.eps)||0;
     const fvs=[
-      saved.g3  ? eps*Math.pow(1+parseFloat(saved.g3)/100,3)   : null,
-      saved.g5  ? eps*Math.pow(1+parseFloat(saved.g5)/100,5)   : null,
-      saved.g10 ? eps*Math.pow(1+parseFloat(saved.g10)/100,10) : null,
+      saved.g3  ? eps*parseFloat(saved.g3)   : null,
+      saved.g5  ? eps*parseFloat(saved.g5)   : null,
+      saved.g10 ? eps*parseFloat(saved.g10)  : null,
     ].filter(v=>v&&v>0);
     if(!fvs.length) return null;
     const lo=Math.min(...fvs),hi=Math.max(...fvs);
@@ -123,6 +123,17 @@ function PriceTag({label,fv,price}) {
   );
 }
 
+// 目前股價顯示列
+function CurrentPriceBar({price}) {
+  if(!price) return null;
+  return (
+    <div style={{display:"flex",alignItems:"center",gap:8,padding:"8px 12px",background:"#0a0e1c",border:"1px solid #1e2840",borderRadius:8,marginBottom:14}}>
+      <span style={{fontSize:12,color:"#5a7a9a"}}>目前股價</span>
+      <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:18,color:"#c8d8f0"}}>{fmt$(price)}</span>
+    </div>
+  );
+}
+
 function FairValueCalc({stock}) {
   const autoEps=useMemo(()=>{
     if(stock.eps_current!=null) return String(stock.eps_current);
@@ -141,10 +152,18 @@ function FairValueCalc({stock}) {
   const [fairSaved,setFairSaved]=useState(false);
   const setI=(k,v)=>setInputs(p=>({...p,[k]:v}));
   const calc=()=>{
-    const eps=parseFloat(inputs.eps)||0,g3=parseFloat(inputs.g3)||0,
-          g5=parseFloat(inputs.g5)||0,g10=parseFloat(inputs.g10)||0,
-          div=parseFloat(inputs.div)||0,bvps=parseFloat(inputs.bvps)||0;
-    if(type==="growth") return {fv3:g3?eps*Math.pow(1+g3/100,3):null,fv5:g5?eps*Math.pow(1+g5/100,5):null,fv10:g10?eps*Math.pow(1+g10/100,10):null};
+    const eps=parseFloat(inputs.eps)||0,
+          g3=parseFloat(inputs.g3)||0,
+          g5=parseFloat(inputs.g5)||0,
+          g10=parseFloat(inputs.g10)||0,
+          div=parseFloat(inputs.div)||0,
+          bvps=parseFloat(inputs.bvps)||0;
+    // PEG 法：合理價 = EPS × 成長率(%)
+    if(type==="growth") return {
+      fv3:  g3  ? eps*g3  : null,
+      fv5:  g5  ? eps*g5  : null,
+      fv10: g10 ? eps*g10 : null,
+    };
     if(type==="dividend") return {fv:div>0?div*25:null};
     if(type==="asset")    return {fv:bvps>0?bvps*0.8:null};
     return {};
@@ -157,16 +176,28 @@ function FairValueCalc({stock}) {
     :`https://www.stockboss.io/symbol/${stock.ticker}`;
   return (
     <div>
-      <div style={{fontSize:13,color:"#8899bb",marginBottom:12}}>選擇股票類型以計算合理價</div>
-      <div style={{display:"flex",flexDirection:"column",gap:7,marginBottom:16}}>
-        {[["growth","📈 成長股","EPS × 成長率^年數"],["dividend","💰 股息股","年股息 × 25"],["asset","🏦 資產股","BVPS × 0.8"]].map(([id,lb,desc])=>(
-          <button key={id} className={`type-btn ${type===id?"active":""}`} onClick={()=>setType(id)}>
-            <div style={{fontWeight:600}}>{lb}</div>
-            <div style={{fontSize:11,opacity:0.7,marginTop:2}}>{desc}</div>
+      <div style={{fontSize:13,color:"#8899bb",marginBottom:10}}>選擇股票類型以計算合理價</div>
+
+      {/* 橫排類型選擇 */}
+      <div style={{display:"flex",gap:6,marginBottom:14}}>
+        {[["growth","📈 成長股","EPS × 成長率%"],["dividend","💰 股息股","年股息 × 25"],["asset","🏦 資產股","BVPS × 0.8"]].map(([id,lb,desc])=>(
+          <button key={id} onClick={()=>setType(id)}
+            style={{flex:1,padding:"10px 6px",borderRadius:8,cursor:"pointer",transition:"all 0.2s",textAlign:"center",
+              background:type===id?"#f0b90b18":"#0d1120",
+              border:`2px solid ${type===id?"#f0b90b":"#1e2840"}`,
+              outline:"none"}}>
+            <div style={{fontSize:13,fontWeight:700,color:type===id?"#f0b90b":"#c0d0e8"}}>{lb}</div>
+            <div style={{fontSize:10,color:type===id?"#f0b90baa":"#4a5a7a",marginTop:3}}>{desc}</div>
           </button>
         ))}
       </div>
+
+      <CurrentPriceBar price={price}/>
+
       {type==="growth"&&(<div>
+        <div style={{fontSize:11,color:"#5a7a9a",marginBottom:10,padding:"6px 10px",background:"#0a0e1c",borderRadius:6,borderLeft:"2px solid #f0b90b40"}}>
+          PEG 法：合理本益比 ≈ 成長率，合理價 = EPS × 成長率(%)
+        </div>
         <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:12}}>
           <div><div style={{fontSize:12,color:"#6a8ab8",marginBottom:5}}>目前 EPS（元）</div>
             <input type="number" value={inputs.eps} onChange={e=>setI("eps",e.target.value)} placeholder="例：42.3" style={IS("eps")}/>
