@@ -45,6 +45,8 @@ FALLBACK_TICKERS = [
 def get_us_tickers():
     tickers = set()
     print("[INFO] 嘗試從 Wikipedia 取得最新清單...", flush=True)
+
+    # 1. S&P 500
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         res = req.get(url, headers=HEADERS, timeout=15)
@@ -54,6 +56,8 @@ def get_us_tickers():
         print(f"✓ S&P500: {len(sp)} 支", flush=True)
     except Exception as e:
         print(f"[警告] S&P500 失敗: {e}", flush=True)
+
+    # 2. NASDAQ-100
     try:
         url = "https://en.wikipedia.org/wiki/Nasdaq-100"
         res = req.get(url, headers=HEADERS, timeout=15)
@@ -63,40 +67,79 @@ def get_us_tickers():
         print(f"✓ NASDAQ100: {len(ndx)} 支", flush=True)
     except Exception as e:
         print(f"[警告] NASDAQ100 失敗: {e}", flush=True)
+
+    # 3. 手動補充：S&P500 以外的重要中大型股
+    EXTRA = [
+        # 金融科技 / 支付
+        "SQ","PYPL","SOFI","AFRM","COIN","HOOD","IBKR","LPLA","RJF","MKTX",
+        # 雲端 / 軟體
+        "TWLO","ZM","DOCN","PATH","AI","GTLB","HUBS","BILL","DDOG","MDB","SNOW",
+        "PLTR","NTNX","PSTG","CFLT","SMAR","APPF","PCTY","PAYC",
+        # 半導體（中小型）
+        "WOLF","OLED","ONTO","MKSI","COHU","ACLS","FORM","UCTT","AMBA","CRUS",
+        # 生技 / 醫療
+        "MRNA","BNTX","BEAM","NTLA","CRSP","EDIT","ALNY","IONS","BMRN","RARE",
+        "ACAD","INCY","SGEN","PRGO","JAZZ","EXAS","NVCR","DXCM","PODD","IRTC",
+        # 消費 / 電商
+        "ETSY","W","CHWY","CVNA","RVLV","LULU","RH","WSM","ELF","ULTA","POST",
+        # 媒體 / 串流
+        "SPOT","PARA","WMG","LYV","IMAX",
+        # 能源轉型
+        "BE","PLUG","ARRY","RUN","NOVA","FSLR","ENPH","SEDG",
+        # 工業 / 國防
+        "LDOS","SAIC","BAH","CACI","MANT","DRS","TDG","HWM",
+        # REITs
+        "VICI","STAG","COLD","IIPR","CUBE","LSI","NNN","ADC","EPRT","MPW",
+        # 廣告科技
+        "TTD","ROKU","DV","IAS","MGNI","PUBM","APPS",
+        # 中型金融
+        "SF","EVR","HLI","GBCI","CVBF","FNB","WTFC",
+        # 其他成長股
+        "ABNB","DASH","DUOL","CELH","AXON","GNRC","TREX","POOL",
+    ]
+    before = len(tickers)
+    tickers.update(EXTRA)
+    print(f"✓ 手動補充: {len(tickers)-before} 支新增", flush=True)
+
     if not tickers:
         print("[INFO] 使用保底清單", flush=True)
         return FALLBACK_TICKERS
     tickers.update(FALLBACK_TICKERS)
     result = list(tickers)
-    print(f"[INFO] 美股清單共 {len(result)} 支", flush=True)
+    print(f"[INFO] 美股清單共 {len(result)} 支（市值篩選前）", flush=True)
     return result
 
 def pre_filter(tickers):
     print(f"[初篩] 批次下載 {len(tickers)} 支行情...", flush=True)
     passed = []
-    for i in range(0, len(tickers), 100):
-        batch = tickers[i:i+100]
-        try:
-            df = yf.download(batch, period="5d", auto_adjust=True, progress=False)
-            if df.empty:
-                passed.extend(batch); continue
+    for i in range(0, len(tickers), 50):
+        batch = tickers[i:i+50]
+        for attempt in range(3):
             try:
+                df = yf.download(batch, period="5d", auto_adjust=True,
+                                 progress=False, timeout=30)
+                if df.empty:
+                    passed.extend(batch); break
                 close  = df["Close"]
                 volume = df["Volume"]
-            except Exception:
-                passed.extend(batch); continue
-            for t in batch:
-                try:
-                    ac = close[t].dropna().mean()  if t in close.columns  else 0
-                    av = volume[t].dropna().mean() if t in volume.columns else 0
-                    if ac >= 5 and av >= 100_000:
+                for t in batch:
+                    try:
+                        ac = close[t].dropna().mean()  if t in close.columns  else 0
+                        av = volume[t].dropna().mean() if t in volume.columns else 0
+                        if ac >= 5 and av >= 100_000: passed.append(t)
+                    except Exception:
                         passed.append(t)
-                except Exception:
-                    passed.append(t)
-        except Exception as e:
-            print(f"[初篩批次失敗] {e}", flush=True)
-            passed.extend(batch)
-        time.sleep(2)
+                break
+            except Exception as e:
+                err = str(e)
+                if attempt < 2:
+                    wait = 15 * (attempt + 1)
+                    print(f"[初篩重試] {err[:60]}，等 {wait}s...", flush=True)
+                    time.sleep(wait)
+                else:
+                    print(f"[初篩放棄此批] {err[:60]}", flush=True)
+                    passed.extend(batch)
+        time.sleep(3)
     print(f"[初篩] 通過 {len(passed)} 支（過濾 {len(tickers)-len(passed)} 支）", flush=True)
     print("[暫停] 初篩完畢，等待 60 秒讓 Yahoo 冷卻...", flush=True)
     time.sleep(60)
