@@ -457,6 +457,14 @@ function App() {
   const qualified=filtered.filter(r=>r.total_score>=7);
   const onMoatUpdate=(ticker,score,types)=>setMoatMap(p=>({...p,[ticker]:{score,types}}));
 
+  // 板塊分佈：從通過 filterMin 的股票中統計
+  const sectorBreakdown = useMemo(()=>{
+    const base = enriched.filter(r=>r.fin_score>=filterMin);
+    const map = {};
+    base.forEach(r=>{ if(r.sector){ map[r.sector]=(map[r.sector]||0)+1; } });
+    return Object.entries(map).sort((a,b)=>b[1]-a[1]);
+  },[enriched,filterMin]);
+
   return (
     <div style={{minHeight:"100vh",background:"#080c18"}}>
       <div style={{borderBottom:"1px solid #1a2540",background:"#0a0e1c",padding:"0 20px",display:"flex",alignItems:"center",justifyContent:"space-between",height:56,position:"sticky",top:0,zIndex:50,flexWrap:"wrap",gap:8}}>
@@ -499,6 +507,33 @@ function App() {
             ))}
             <div style={{fontSize:12,color:"#3a4a6a",alignSelf:"center",marginLeft:"auto"}}>更新：{data.updated}</div>
           </div>)}
+
+          {/* 板塊分佈 */}
+          {data&&sectorBreakdown.length>0&&(
+            <div style={{marginBottom:16}}>
+              <div style={{fontSize:12,color:"#4a5a7a",marginBottom:8,display:"flex",alignItems:"center",gap:8}}>
+                <span>板塊分佈</span>
+                {sectorFilter!=="全部"&&<button onClick={()=>setSectorFilter("全部")} style={{fontSize:11,color:"#f0b90b",background:"#f0b90b15",border:"1px solid #f0b90b40",borderRadius:4,padding:"1px 8px",cursor:"pointer"}}>✕ 清除篩選</button>}
+              </div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {sectorBreakdown.map(([sector,count])=>{
+                  const isActive = sectorFilter===sector;
+                  const pct = Math.round(count/sectorBreakdown.reduce((s,[,c])=>s+c,0)*100);
+                  return (
+                    <button key={sector} onClick={()=>setSectorFilter(isActive?"全部":sector)}
+                      style={{display:"flex",alignItems:"center",gap:6,padding:"5px 10px",borderRadius:7,cursor:"pointer",transition:"all 0.2s",
+                        background:isActive?"#f0b90b18":"#0d1120",
+                        border:`1px solid ${isActive?"#f0b90b":"#1e2840"}`}}>
+                      <span style={{fontSize:13,color:isActive?"#f0b90b":"#8899bb",fontWeight:isActive?700:400}}>{sector}</span>
+                      <span style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,fontSize:15,color:isActive?"#f0b90b":"#c0d0e8"}}>{count}</span>
+                      <span style={{fontSize:10,color:"#4a5a7a"}}>{pct}%</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div style={{display:"flex",gap:8,marginBottom:16,flexWrap:"wrap",alignItems:"center"}}>
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜尋代號/名稱..." style={{background:"#0d1120",border:"1px solid #1e2840",borderRadius:8,padding:"8px 14px",color:"#e8f0ff",fontSize:14,width:180}}/>
             <select value={sectorFilter} onChange={e=>setSectorFilter(e.target.value)} style={{background:"#0d1120",border:"1px solid #1e2840",borderRadius:8,padding:"8px 12px",color:"#e8f0ff",fontSize:13}}>
