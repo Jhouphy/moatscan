@@ -119,6 +119,7 @@ function PriceTag({label,fv,price}) {
       <div style={{fontSize:11,color:"#6a8ab8",marginBottom:4}}>{label}</div>
       <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:22,color:"#f0b90b"}}>{fmt$(fv)}</div>
       {pct!=null&&<div style={{fontSize:11,color:pct>0?"#ff4757":"#00c853",marginTop:3}}>{pct>0?"高估 +":"低估 "}{Math.abs(pct).toFixed(1)}%</div>}
+      {price>0&&<div style={{fontSize:11,color:"#5a7a9a",marginTop:4,borderTop:"1px solid #1e2840",paddingTop:4,width:"100%",textAlign:"center"}}>現價 {fmt$(price)}</div>}
     </div>
   );
 }
@@ -242,11 +243,11 @@ function FairValueCalc({stock}) {
   );
 }
 
-function StockRow({stock,market,onSelect,isWatched}) {
+function StockRow({stock,market,onSelect,isWatched,noMargin}) {
   const total=(stock.fin_score||0)+(stock.moat_score||0);
   return (
     <div className="stock-row" onClick={()=>onSelect(stock)}
-      style={{background:"#0d1120",border:`1px solid ${FC(stock.fin_score)}30`,borderRadius:12,padding:"14px 18px",display:"flex",alignItems:"center",gap:14,marginBottom:10}}>
+      style={{background:"#0d1120",border:`1px solid ${FC(stock.fin_score)}30`,borderRadius:12,padding:"14px 18px",display:"flex",alignItems:"center",gap:14,marginBottom:noMargin?0:10}}>
       <div style={{width:54,height:54,borderRadius:11,background:FB(stock.fin_score),border:`2px solid ${FC(stock.fin_score)}66`,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",flexShrink:0}}>
         <div style={{fontFamily:"'Barlow Condensed',sans-serif",fontWeight:900,fontSize:24,color:FC(stock.fin_score),lineHeight:1}}>{stock.fin_score}</div>
         <div style={{fontSize:10,color:"#4a5a7a",marginTop:1}}>/6</div>
@@ -403,10 +404,12 @@ function WatchlistGroup({label,flag,stocks,onSelect,onRemove,mkt}) {
         <span style={{fontSize:13,color:"#4a5a7a",marginLeft:4}}>{stocks.length} 支</span>
       </div>
       {stocks.map(stock=>(
-        <div key={stock.ticker} style={{position:"relative"}}>
-          <StockRow stock={stock} market={mkt} onSelect={onSelect} isWatched={true}/>
+        <div key={stock.ticker} style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+          <div style={{flex:1,minWidth:0,marginBottom:0}}>
+            <StockRow stock={stock} market={mkt} onSelect={onSelect} isWatched={true} noMargin={true}/>
+          </div>
           <button onClick={e=>{e.stopPropagation();onRemove(stock.ticker);}}
-            style={{position:"absolute",top:"50%",transform:"translateY(-50%)",right:14,padding:"5px 10px",background:"#ff475720",border:"1px solid #ff475740",borderRadius:6,color:"#ff4757",fontSize:12,cursor:"pointer",zIndex:2}}>移除</button>
+            style={{flexShrink:0,padding:"6px 12px",background:"#ff475720",border:"1px solid #ff475740",borderRadius:6,color:"#ff4757",fontSize:12,cursor:"pointer",whiteSpace:"nowrap"}}>移除</button>
         </div>
       ))}
     </div>
