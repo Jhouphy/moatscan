@@ -44,6 +44,9 @@
     </div>
   </div>
 
+  <!-- 板塊/主題標籤列 -->
+  <div id="tagbar" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px;min-height:28px;"></div>
+
   <!-- Canvas -->
   <div id="mapwrap" style="width:100%;border-radius:10px;overflow:hidden;background:#060a14;">
     <svg id="map" style="display:block;width:100%;"></svg>
@@ -130,6 +133,10 @@ const DEMO = {
     {ticker:"BA",name:"波音",sector:"Industrials",market_cap:130000000000,price:175,fin_score:3,change_pct:-1.20},
   ]}
 };
+
+// 概覽模式只顯示市值超過此門檻的股票（太小的格子沒意義）
+// TW: 100億以上；US: 100億美元以上
+const MIN_CAP = {TW: 10_000_000_000, US: 10_000_000_000};
 
 const app = {
   M:'TW', S:null, T:null, cache:{TW:null,US:null},
@@ -244,7 +251,13 @@ const app = {
 
     if(!this.S){
       // 全覽
-      const root=d3.hierarchy({name:'r',children:secs.map(s=>({
+      // 概覽：過濾掉太小的公司，只顯示有意義大小的格子
+      const minCap = MIN_CAP[this.M]||0;
+      const filteredSecs = secs.map(s=>({
+        ...s, d: s.d.filter(r=>(r.market_cap||0)>=minCap)
+      })).filter(s=>s.d.length>0);
+
+      const root=d3.hierarchy({name:'r',children:filteredSecs.map(s=>({
         name: isTW?s.s:(SECTOR_ZH[s.s]||s.s),
         origName: s.s,
         children:s.d
@@ -273,8 +286,10 @@ const app = {
 
       this._tiles(svg,root.leaves(),W,H,false,isTW);
       document.getElementById('breadcrumb').innerHTML='<span style="color:#4a5a7a">全部板塊</span>';
-      document.getElementById('counter').textContent=root.leaves().length+' 支';
+      document.getElementById('counter').textContent=root.leaves().length+' 支（市值門檻以上）';
       document.getElementById('updated').textContent='更新：'+raw.updated;
+      // 渲染板塊標籤列（顯示漲跌數）
+      this._renderTagBar(filteredSecs, isTW, null, null);
 
     } else if(this.S && this.T) {
       // 第三層：板塊內的主題篩選
@@ -294,6 +309,7 @@ const app = {
         +'<span style="background:#f0b90b18;color:#f0b90b;padding:2px 8px;border-radius:4px;font-size:12px;">'+this.T+'</span>';
       document.getElementById('counter').textContent=this.T+' · '+themed.length+' 支';
       document.getElementById('updated').textContent='更新：'+raw.updated;
+      document.getElementById('tagbar').innerHTML='';
 
     } else {
       // 第二層：展開單一板塊 + 顯示主題標籤
@@ -309,35 +325,71 @@ const app = {
 
       const secLabel=isTW?sec.s:(SECTOR_ZH[sec.s]||sec.s);
 
-      // 若有主題，縮小 treemap 高度留出主題標籤列
-      const tagH = themes.length ? 44 : 0;
-      d3.treemap().size([W, H-tagH]).padding(3)(root);
-      this._tiles(svg,root.leaves(),W,H-tagH,true,isTW);
-
-      // 主題標籤（foreignObject 做 HTML flex wrap）
-      if(themes.length){
-        const fo=svg.append('foreignObject').attr('x',0).attr('y',H-tagH).attr('width',W).attr('height',tagH);
-        const div=fo.append('xhtml:div').style('display','flex').style('flex-wrap','wrap')
-          .style('gap','6px').style('padding','8px 10px').style('background','#060a14').style('height','100%').style('align-items','center');
-        themes.forEach(([t,cnt])=>{
-          div.append('xhtml:button')
-            .style('background','#1a2540').style('border','1px solid #2a3a58').style('border-radius','6px')
-            .style('color','#c8d8f0').style('font-size','12px').style('padding','3px 10px').style('cursor','pointer')
-            .style('font-family',"'Noto Sans TC',sans-serif").style('white-space','nowrap')
-            .text(t+' '+cnt)
-            .on('click',()=>{ app.T=t; app.draw(); });
-        });
-      }
+      // treemap 佔滿全高（標籤列已移到上方 HTML tagbar）
+      d3.treemap().size([W, H]).padding(3)(root);
+      this._tiles(svg,root.leaves(),W,H,true,isTW);
 
       document.getElementById('breadcrumb').innerHTML=
         '<span onclick="app.back()" style="cursor:pointer;color:#4a8aff">全部板塊</span>'
         +' <span style="color:#2a3a58"> › </span>'
-        +'<span style="color:#e8f0ff">'+secLabel+'</span>'
-        +(themes.length?' <span style="color:#3a4a6a;font-size:11px;margin-left:4px;">點主題標籤可篩選</span>':'');
+        +'<span style="color:#e8f0ff">'+secLabel+'</span>';
       document.getElementById('counter').textContent=secLabel+' · '+sec.d.length+' 支';
       document.getElementById('updated').textContent='更新：'+raw.updated;
+      // 渲染主題標籤列
+      this._renderTagBar(null, isTW, sec, null);
     }
     document.getElementById('tooltip').style.display='none';
+  },
+
+  // 渲染標籤列
+  // secs: 板塊陣列（概覽用）; sec: 單一板塊（板塊內主題用）
+  _renderTagBar(secs, isTW, sec, activeTheme){
+    const bar = document.getElementById('tagbar');
+    bar.innerHTML = '';
+    const self = this;
+
+    if(secs){
+      // 概覽：顯示各板塊，帶漲跌數
+      secs.forEach(s=>{
+        const label = isTW ? s.s : (SECTOR_ZH[s.s]||s.s);
+        const up   = s.d.filter(r=>(r.change_pct||0)>0).length;
+        const down = s.d.filter(r=>(r.change_pct||0)<0).length;
+        const btn  = document.createElement('button');
+        btn.style.cssText='background:#0d1120;border:1px solid #1e2840;border-radius:7px;padding:4px 10px;cursor:pointer;display:flex;align-items:center;gap:5px;font-size:12px;color:#c8d8f0;font-family:"Noto Sans TC",sans-serif;white-space:nowrap;transition:background 0.15s;';
+        btn.innerHTML=`<span>${label}</span>`
+          +(up?`<span style="color:#ff8866;font-size:11px;">${up}🔴</span>`:'')
+          +(down?`<span style="color:#44cc88;font-size:11px;">${down}🟢</span>`:'');
+        btn.onmouseover=()=>btn.style.background='#1a2540';
+        btn.onmouseout=()=>btn.style.background='#0d1120';
+        btn.onclick=()=>{ self.S=s.s; self.T=null; self.draw(); };
+        bar.appendChild(btn);
+      });
+    } else if(sec){
+      // 板塊內：顯示主題標籤，帶漲跌數
+      const themeCounts={};
+      sec.d.forEach(s=>(s.themes||[]).forEach(t=>{
+        if(!themeCounts[t]) themeCounts[t]={up:0,down:0};
+        if((s.change_pct||0)>0) themeCounts[t].up++;
+        else if((s.change_pct||0)<0) themeCounts[t].down++;
+      }));
+      const themes=Object.entries(themeCounts).sort((a,b)=>(b[1].up+b[1].down)-(a[1].up+a[1].down));
+      if(!themes.length){
+        bar.innerHTML='<span style="font-size:11px;color:#3a4a6a;">（此板塊尚無主題標籤，重跑 screener 後出現）</span>';
+        return;
+      }
+      themes.forEach(([t,cnt])=>{
+        const isActive = activeTheme===t;
+        const btn = document.createElement('button');
+        btn.style.cssText=`background:${isActive?'#f0b90b18':'#0d1120'};border:1px solid ${isActive?'#f0b90b':'#1e2840'};border-radius:7px;padding:4px 10px;cursor:pointer;display:flex;align-items:center;gap:5px;font-size:12px;color:${isActive?'#f0b90b':'#c8d8f0'};font-family:"Noto Sans TC",sans-serif;white-space:nowrap;transition:all 0.15s;`;
+        btn.innerHTML=`<span>${t}</span>`
+          +(cnt.up?`<span style="color:#ff8866;font-size:11px;">${cnt.up}🔴</span>`:'')
+          +(cnt.down?`<span style="color:#44cc88;font-size:11px;">${cnt.down}🟢</span>`:'');
+        btn.onmouseover=()=>{ if(!isActive) btn.style.background='#1a2540'; };
+        btn.onmouseout=()=>{ if(!isActive) btn.style.background='#0d1120'; };
+        btn.onclick=()=>{ self.T=t; self.draw(); };
+        bar.appendChild(btn);
+      });
+    }
   },
 
   _tiles(svg,leaves,W,H,big,isTW){
